@@ -29,7 +29,7 @@
         <strong>MSRV is 1.85+</strong> (Rust 2024 edition). <code>#![forbid(unsafe_code)]</code>. <code>no_std</code> core (with <code>alloc</code>).
     </p>
     <blockquote>
-        <strong>Status: <code>0.7.0</code>, hardened.</strong> Every feature is built, measured, and attacked: an attack test for each of the fifteen threats, property tests, four invariant-checking fuzz targets, and statistical constant-time tests, all in CI. Next is the <code>0.8.0</code> alpha (API review against real adapters), then the <code>0.9</code> release candidates and <code>1.0</code>. The schedule is <a href="./dev/ROADMAP.md"><code>dev/ROADMAP.md</code></a>.
+        <strong>Status: <code>0.8.0</code>, alpha.</strong> Every feature is built, measured, attacked, and checked against real browsers; every mutant of the crate is caught by a test. Next are the <code>0.9</code> release candidates (adversarial review, long constant-time runs), then <code>1.0</code>. The schedule is <a href="./dev/ROADMAP.md"><code>dev/ROADMAP.md</code></a>.
     </blockquote>
 </div>
 
@@ -40,7 +40,7 @@
 
 ```toml
 [dependencies]
-csrf-sec = "0.7.0"
+csrf-sec = "0.8.0"
 ```
 
 ## Quick Start
@@ -100,7 +100,8 @@ Measured, same machine and harness (`dev/bench-compare`). csrf-sec is also sessi
 - **Stateless by default.** Any node with the key ring verifies any session token; no shared store, no replication, no bottleneck. Only one-time tokens use a store.
 - **Constant time where it matters.** The tag comparison and the base64url codec (no lookup tables); canonical text only, so any changed character fails.
 - **Fail closed.** If the clock or the random generator fails, no token is issued; nothing panics.
-- **Attacked, not just tested.** Each of the fifteen threats in the plan has a test that plays the attacker; fuzz targets assert that nothing forged verifies and that a changed token never passes; Welch t-tests show the tag comparison and the decoder take the same time whatever the data.
+- **Attacked, not just tested.** Each of the fifteen threats in the plan has a test that plays the attacker; fuzz targets assert that nothing forged verifies and that a changed token never passes; Welch t-tests show the tag comparison and the decoder take the same time whatever the data; mutation testing shows every change to the code is caught by a test.
+- **Checked in real browsers.** `examples/server.rs` is a complete adapter with no dependencies; run it and watch a real browser's cross-site post get refused.
 - **Ours.** No third-party runtime dependency of its own: keyed BLAKE3 through `crypt-io`, randomness through `mod-rand`. No async runtime.
 
 <br>
@@ -113,7 +114,7 @@ Cross-site scripting defeats every CSRF defence, because script on the page can 
 
 ## Documentation
 
-- [`docs/API.md`](./docs/API.md): the API by task, with recipes (no server session, single-page apps, tenants, logging), every example compiled as a test.
+- [`docs/API.md`](./docs/API.md): the API by task, an adapter guide, and recipes (no server session, single-page apps, tenants, logging), every example compiled as a test.
 - [`docs/PERFORMANCE.md`](./docs/PERFORMANCE.md): measured costs of every call and rejection, and the comparison with the `csrf` crate.
 - [docs.rs/csrf-sec](https://docs.rs/csrf-sec): item reference.
 - [`dev/PLAN.md`](./dev/PLAN.md): the design, threats T1-T15 with defence and cost, and the decision log.

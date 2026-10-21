@@ -313,12 +313,39 @@ mod memory {
         }
 
         #[test]
+        fn test_nonce_hasher_spreads_distinct_nonces() {
+            use std::{
+                collections::HashSet,
+                hash::{BuildHasher, BuildHasherDefault},
+            };
+            let build = BuildHasherDefault::<super::NonceHasher>::default();
+            let hashes: HashSet<u64> = (0..=255u8)
+                .flat_map(|i| (0..8).map(move |pos| (i, pos)))
+                .map(|(i, pos)| {
+                    let mut n = [0u8; 16];
+                    n[pos] = i;
+                    build.hash_one(n)
+                })
+                .collect();
+            // 8 positions x 255 nonzero values, plus the all-zero nonce.
+            assert_eq!(hashes.len(), 8 * 255 + 1);
+        }
+
+        #[test]
+        fn test_store_error_display() {
+            assert!(StoreError::Unavailable.to_string().contains("unavailable"));
+            assert!(StoreError::Full.to_string().contains("full"));
+        }
+
+        #[test]
         fn test_memory_store_consume_once() {
             let s = MemoryStore::starting_at(10, 0);
+            assert!(s.is_empty());
             assert_eq!(s.consume(&use_(nonce(1), 5, 100, 10)), Ok(true));
             assert_eq!(s.consume(&use_(nonce(1), 5, 100, 11)), Ok(false));
             assert_eq!(s.consume(&use_(nonce(2), 5, 100, 11)), Ok(true));
             assert_eq!(s.len(), 2);
+            assert!(!s.is_empty());
         }
 
         #[test]

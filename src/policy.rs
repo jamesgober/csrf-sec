@@ -962,9 +962,43 @@ mod tests {
 
     #[test]
     fn test_request_facts_debug_hides_referer() {
-        let f = post().referer("https://example.com/reset?token=secret");
+        let f = post()
+            .origin("https://origin.example")
+            .referer("https://example.com/reset?token=secret");
         let text = format!("{f:?}");
         assert!(!text.contains("secret"));
+        assert!(text.contains("https://origin.example"), "{text}");
+        assert!(text.contains("https://example.com"), "{text}");
+        assert!(text.contains("Unsafe"), "{text}");
+        let raw = RequestFacts::new("POST").origin(&[0xff, 0xfe][..]);
+        assert!(format!("{raw:?}").contains("<non-utf8>"));
+    }
+
+    #[test]
+    fn test_referer_fast_path_compares_the_whole_origin() {
+        // A malformed own origin that is a prefix of the Referer must never
+        // match through the byte-identical fast path.
+        let p = Policy::default();
+        for own in ["h", "https", "https://", "https://example.co"] {
+            let f = RequestFacts::new("POST")
+                .referer("https://example.com/x")
+                .own_origin(own);
+            let d = p.decide(&f);
+            assert_ne!(d, Ok(OriginCheck::Referer), "own origin {own:?}");
+        }
+    }
+
+    #[test]
+    fn test_header_length_limit_boundary() {
+        use super::MAX_HEADER;
+        let host = |n: usize| "a".repeat(n - "https://".len());
+        let at_limit = format!("https://{}", host(MAX_HEADER));
+        assert_eq!(at_limit.len(), MAX_HEADER);
+        assert!(parse_origin(at_limit.as_bytes()).is_some());
+        assert!(referer_origin(at_limit.as_bytes()).is_some());
+        let over = format!("https://{}", host(MAX_HEADER + 1));
+        assert!(parse_origin(over.as_bytes()).is_none());
+        assert!(referer_origin(over.as_bytes()).is_none());
     }
 
     #[test]

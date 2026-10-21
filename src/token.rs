@@ -473,6 +473,27 @@ mod tests {
         assert!(!super::ct_eq16(&a, &[]));
     }
 
+    #[cfg(feature = "std")]
+    #[test]
+    fn test_token_views_agree() {
+        use crate::{Binding, Csrf, OsPads};
+        let c = Csrf::new(*b"token view tests, thirty-two by!").unwrap();
+        let t = c
+            .issue_at(&Binding::new("s"), EPOCH + 100, &mut OsPads)
+            .unwrap();
+        let s: &str = &t;
+        assert_eq!(s.len(), 59);
+        assert_eq!(AsRef::<str>::as_ref(&t), s);
+        assert_eq!(AsRef::<[u8]>::as_ref(&t), s.as_bytes());
+        assert_eq!(t.as_bytes(), s.as_bytes());
+        assert_eq!(t.to_string(), s);
+        assert_eq!(format!("{t:?}"), "Token(59 chars)");
+        assert!(!t.is_empty());
+        assert_eq!(t.len(), 59);
+        let owned: String = t.clone().into();
+        assert_eq!(owned, s);
+    }
+
     #[test]
     fn test_put_varint_known_encodings() {
         let cases: [(u64, &[u8]); 6] = [

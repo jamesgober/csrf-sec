@@ -604,6 +604,50 @@ mod tests {
     }
 
     #[test]
+    fn test_default_constants_values() {
+        assert_eq!(DEFAULT_LIFETIME, Duration::from_secs(43_200));
+        assert_eq!(DEFAULT_SKEW, Duration::from_secs(60));
+    }
+
+    #[test]
+    fn test_builder_settings_are_kept() {
+        let c = Csrf::builder()
+            .key(KeyId(2), K1)
+            .mode(Mode::TokenOnly)
+            .lifetime(Duration::from_secs(900))
+            .skew(Duration::from_secs(5))
+            .allow_same_site(true)
+            .build()
+            .unwrap();
+        assert_eq!(c.mode(), Mode::TokenOnly);
+        assert_eq!(c.lifetime(), Duration::from_secs(900));
+        assert_eq!(c.skew(), Duration::from_secs(5));
+        assert_eq!(c.signing_key(), KeyId(2));
+        let sibling = RequestFacts::new("POST").fetch_site("same-site");
+        assert_eq!(c.policy(&sibling), Ok(OriginCheck::FetchMetadata));
+        let strict = Csrf::builder().key(KeyId(2), K1).build().unwrap();
+        assert_eq!(
+            strict.policy(&sibling).unwrap_err().reason(),
+            Reason::CrossSite
+        );
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn test_accepts_uses_the_system_clock() {
+        let c = Csrf::builder()
+            .key(KeyId(1), K1)
+            .retired(KeyId(2), K2, u64::MAX)
+            .retired(KeyId(3), K3, 1)
+            .build()
+            .unwrap();
+        assert!(c.accepts(KeyId(1)));
+        assert!(c.accepts(KeyId(2)));
+        assert!(!c.accepts(KeyId(3)), "retired in 1970");
+        assert!(!c.accepts(KeyId(4)));
+    }
+
+    #[test]
     fn test_new_defaults() {
         let c = Csrf::new(K1).unwrap();
         assert_eq!(c.signing_key(), KeyId(0));
@@ -905,6 +949,11 @@ mod tests {
         assert!(text.contains("KeyId(1)"));
         assert!(text.contains("https://a.example"));
         let builder = Csrf::builder().key(KeyId(1), K1);
-        assert!(!format!("{builder:?}").contains("key one"));
+        let text = format!("{builder:?}");
+        assert!(!text.contains("key one"));
+        assert!(
+            text.contains("KeyId(1)") && text.contains("Signing"),
+            "{text}"
+        );
     }
 }
