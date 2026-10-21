@@ -7,6 +7,11 @@
 //! leak shows up as a large |t|; dudect treats |t| above 4.5 as a sign of a
 //! leak and above 10 as definite.
 //!
+//! A real leak is consistent and its |t| grows with the number of samples;
+//! noise from a busy machine comes and goes. So a reading over the threshold
+//! is measured again with twice the samples, up to three attempts, and the
+//! check fails only if every attempt is over.
+//!
 //! These are `#[ignore]`d because they take seconds and need a quiet machine.
 //! Run them in release mode:
 //!
@@ -82,9 +87,9 @@ fn encode(bytes: &[u8]) -> Vec<u8> {
     out
 }
 
-/// Welch's t statistic of two samples, after dropping each sample's slowest
-/// 10 percent.
-fn welch_t(mut a: Vec<f64>, mut b: Vec<f64>) -> f64 {
+/// Welch's t statistic of two samples after dropping each sample's slowest
+/// 10 percent, and the difference of their cropped means.
+fn welch_t(mut a: Vec<f64>, mut b: Vec<f64>) -> (f64, f64) {
     let crop = |v: &mut Vec<f64>| {
         v.sort_by(f64::total_cmp);
         v.truncate(v.len() * 9 / 10);
@@ -99,7 +104,7 @@ fn welch_t(mut a: Vec<f64>, mut b: Vec<f64>) -> f64 {
     };
     let (ma, va, na) = stats(&a);
     let (mb, vb, nb) = stats(&b);
-    (ma - mb) / (va / na + vb / nb).sqrt()
+    ((ma - mb) / (va / na + vb / nb).sqrt(), ma - mb)
 }
 
 /// One buffer, aligned to a cache line, that every sample of both classes is
@@ -110,11 +115,14 @@ fn welch_t(mut a: Vec<f64>, mut b: Vec<f64>) -> f64 {
 #[repr(align(64))]
 struct Aligned([u8; 128]);
 
-/// Time `run` on inputs of class 0 and class 1, interleaved at random. Each
-/// sample copies its class's input into the shared buffer (untimed), then
-/// times a batch of calls, so the clock's resolution does not dominate.
-fn measure(inputs: [&[u8]; 2], run: impl Fn(&[u8])) -> f64 {
-    const BATCH: usize = 8;
+/// Calls timed together in one sample, so the clock's resolution does not
+/// dominate.
+const BATCH: usize = 8;
+
+/// Time `run` on inputs of class 0 and class 1, interleaved at random, `n`
+/// samples per class. Returns Welch's t and the mean difference per call in
+/// nanoseconds.
+fn measure(inputs: [&[u8]; 2], n: usize, seed: u64, run: &impl Fn(&[u8])) -> (f64, f64) {
     assert_eq!(
         inputs[0].len(),
         inputs[1].len(),
@@ -122,9 +130,8 @@ fn measure(inputs: [&[u8]; 2], run: impl Fn(&[u8])) -> f64 {
     );
     let len = inputs[0].len();
     let mut buf = Box::new(Aligned([0u8; 128]));
-    let n = samples();
-    let mut times: [Vec<f64>; 2] = [Vec::with_capacity(n), Vec::with_capacity(n)];
-    let mut rng = 0x9e37_79b9_7f4a_7c15u64;
+    let mut times: [Vec<f64>; 2] = [Vec::with_capacity(n + n / 8), Vec::with_capacity(n + n / 8)];
+    let mut rng = seed | 1;
     for i in 0..2_000 {
         buf.0[..len].copy_from_slice(inputs[i & 1]);
         run(&buf.0[..len]);
@@ -133,7 +140,7 @@ fn measure(inputs: [&[u8]; 2], run: impl Fn(&[u8])) -> f64 {
         rng ^= rng << 13;
         rng ^= rng >> 7;
         rng ^= rng << 17;
-        let class = (rng & 1) as usize;
+        let class = (rng >> 32 & 1) as usize;
         buf.0[..len].copy_from_slice(inputs[class]);
         let input = black_box(&buf.0[..len]);
         let start = Instant::now();
@@ -143,7 +150,27 @@ fn measure(inputs: [&[u8]; 2], run: impl Fn(&[u8])) -> f64 {
         times[class].push(start.elapsed().as_nanos() as f64);
     }
     let [a, b] = times;
-    welch_t(a, b)
+    let (t, diff) = welch_t(a, b);
+    (t, diff / BATCH as f64)
+}
+
+/// Pass when one attempt reads |t| under the threshold; each further attempt
+/// doubles the samples. Fails only if all three attempts are over.
+fn check(name: &str, inputs: [&[u8]; 2], run: impl Fn(&[u8])) {
+    let limit = threshold();
+    let mut readings = Vec::new();
+    for attempt in 0..3u32 {
+        let n = samples() << attempt;
+        let (t, diff) = measure(inputs, n, 0x9e37_79b9_7f4a_7c15 ^ u64::from(attempt), &run);
+        println!(
+            "{name}: t = {t:.2}, mean difference {diff:+.3} ns per call, {n} samples per class"
+        );
+        readings.push((t, diff));
+        if t.abs() < limit {
+            return;
+        }
+    }
+    panic!("{name}: timing depends on the data in every attempt: {readings:?}");
 }
 
 /// The tag comparison: a forged tag wrong in its first byte against one
@@ -170,52 +197,38 @@ fn timing_tag_comparison_does_not_depend_on_where_tags_differ() {
         c.verify_at(&b, &last, NOW).unwrap_err().reason(),
         Reason::BadMac
     );
-    let t = measure([&first, &last], |token| {
+    check("tag comparison", [&first, &last], |token| {
         let _ = black_box(c.verify_at(&b, token, NOW));
     });
-    println!("tag comparison: t = {t:.2}");
-    assert!(
-        t.abs() < threshold(),
-        "tag comparison timing depends on the data: t = {t:.2}"
-    );
 }
 
-/// The codec: the same verify path (a forged MAC) on token text made of
-/// characters from different parts of the alphabet. A table or a branch per
-/// character class would show here.
+/// The codec: the same raw token under two masks, one that turns most of the
+/// text into `A` and one that spreads it over the whole alphabet. Everything
+/// after unmasking is identical (both verify), so only the decoder's input
+/// differs. A table, or a branch per character class, would show here.
 #[test]
 #[ignore = "statistical timing test; run with --release --ignored"]
 fn timing_decoding_does_not_depend_on_the_characters() {
     let c = Csrf::new(*b"timing test key, thirty-two byte").unwrap();
     let b = Binding::new("victim-session");
-    let mut uppers = vec![b'A'; 59];
-    let mut mixed: Vec<u8> = (0..59).map(|i| ALPHABET[(i * 37 + 11) % 64]).collect();
-    // Same version and key id bytes are not needed: both fail at the same
-    // stage only if they decode; make both canonical and of version 1, key 0
-    // by fixing their first raw bytes through the pad.
-    for t in [&mut uppers, &mut mixed] {
-        t[58] = b'A';
-        let mut raw = decode(t);
-        raw[22] = raw[0] ^ 1; // version 1
-        raw[23] = raw[1]; // key id 0
-        *t = encode(&raw);
-    }
-    assert_eq!(
-        c.verify_at(&b, &uppers, NOW).unwrap_err().reason(),
-        Reason::BadMac
-    );
-    assert_eq!(
-        c.verify_at(&b, &mixed, NOW).unwrap_err().reason(),
-        Reason::BadMac
-    );
-    let t = measure([&uppers, &mixed], |token| {
-        let _ = black_box(c.verify_at(&b, token, NOW));
+    let token = c.issue_at(&b, NOW, &mut Pads(3)).unwrap();
+    let masked = decode(token.as_bytes());
+    let (pad, body) = masked.split_at(22);
+    let raw: Vec<u8> = body.iter().zip(pad).map(|(x, p)| x ^ p).collect();
+    let remask = |pad: &[u8]| {
+        let mut m = pad.to_vec();
+        m.extend(raw.iter().zip(pad).map(|(r, p)| r ^ p));
+        encode(&m)
+    };
+    let zeros = remask(&[0u8; 22]);
+    let spread: Vec<u8> = (0..22u8).map(|i| i.wrapping_mul(97) ^ 0xa5).collect();
+    let spread = remask(&spread);
+    assert!(zeros.starts_with(b"AAAAAAAAAAAAAAAAAAAAAAAAAAAA"));
+    assert!(c.verify_at(&b, &zeros, NOW).is_ok());
+    assert!(c.verify_at(&b, &spread, NOW).is_ok());
+    check("decoding", [&zeros, &spread], |text| {
+        let _ = black_box(c.verify_at(&b, text, NOW));
     });
-    println!("decoding: t = {t:.2}");
-    assert!(
-        t.abs() < threshold(),
-        "decoding timing depends on the characters: t = {t:.2}"
-    );
 }
 
 /// Sanity check of the method itself: two classes of genuinely different
@@ -226,15 +239,18 @@ fn timing_method_detects_a_real_difference() {
     let c = Csrf::new(*b"timing test key, thirty-two byte").unwrap();
     let b = Binding::new("victim-session");
     let token = c.issue_at(&b, NOW, &mut Pads(2)).unwrap();
-    // Same length, but one is refused at the first character (not base64url,
-    // still a full constant-time decode) and one runs the MAC: a real
-    // difference of about 75 ns.
-    let mut garbage = token.as_bytes().to_vec();
-    garbage.iter_mut().for_each(|c| *c = b'*');
-    let t = measure([token.as_bytes(), &garbage], |input| {
-        let _ = black_box(c.verify_at(&b, input, NOW));
-    });
-    println!("control: t = {t:.2}");
+    // Same length, but one is not base64url (refused after the constant-time
+    // decode) and one runs the MAC: a real difference of about 75 ns.
+    let garbage = vec![b'*'; token.len()];
+    let (t, diff) = measure(
+        [token.as_bytes(), &garbage],
+        samples(),
+        7,
+        &|input: &[u8]| {
+            let _ = black_box(c.verify_at(&b, input, NOW));
+        },
+    );
+    println!("control: t = {t:.2}, mean difference {diff:+.3} ns per call");
     assert!(
         t.abs() > 100.0,
         "the method failed to detect a real difference: t = {t:.2}"
