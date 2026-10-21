@@ -5,7 +5,7 @@
 
 use core::fmt;
 
-use crate::{key::KeyId, once::StoreError};
+use crate::key::KeyId;
 
 /// Why a [`Csrf`](crate::Csrf) could not be built, rotated, or could not issue
 /// a token.
@@ -51,8 +51,6 @@ pub enum Error {
     Clock,
     /// The operating system's random generator failed. No token was issued.
     Random,
-    /// The one-time token store refused the nonce. No token was issued.
-    Store(StoreError),
 }
 
 impl fmt::Display for Error {
@@ -89,7 +87,6 @@ impl fmt::Display for Error {
                 f.write_str("system clock is outside 2020-01-01 to 2156-02-07; no token was issued")
             }
             Self::Random => f.write_str("the OS random generator failed; no token was issued"),
-            Self::Store(e) => write!(f, "{e}; no token was issued"),
         }
     }
 }
@@ -115,8 +112,6 @@ mod tests {
             Error::EmptySession,
             Error::Clock,
             Error::Random,
-            Error::Store(crate::StoreError::Full),
-            Error::Store(crate::StoreError::Unavailable),
         ];
         for e in all {
             let text = e.to_string();

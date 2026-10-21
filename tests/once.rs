@@ -1,10 +1,10 @@
 //! One-time tokens: pass exactly once, forged tokens never reach the store,
-//! and a failing store fails closed.
+//! issuing never touches it, and a failing store fails closed.
 
 #![cfg(feature = "std")]
 
 use std::{
-    collections::HashMap,
+    collections::HashSet,
     sync::{
         Arc, Barrier, Mutex,
         atomic::{AtomicUsize, Ordering},
@@ -12,8 +12,8 @@ use std::{
 };
 
 use csrf_sec::{
-    Binding, Csrf, Error, KeyId, MemoryStore, Mode, NonceStore, ONCE_TOKEN_LEN, PadSource, Reason,
-    RequestFacts, StoreError,
+    Binding, Csrf, Error, KeyId, MemoryStore, Mode, NonceStore, NonceUse, ONCE_TOKEN_LEN,
+    PadSource, Reason, RequestFacts, StoreError,
 };
 
 const KEY: [u8; 32] = *b"one-time token tests, 32 bytes!!";
@@ -33,43 +33,26 @@ impl PadSource for TestPads {
     }
 }
 
+/// Session, issued at, expires at, now: the last record a store received.
+type LastUse = Option<(Vec<u8>, u64, u64, u64)>;
+
 /// A store that records every call, to prove what reaches it.
 #[derive(Default)]
 struct SpyStore {
-    nonces: Mutex<HashMap<[u8; 16], u64>>,
-    inserts: AtomicUsize,
-    takes: AtomicUsize,
-    fail_take: bool,
-    fail_insert: bool,
+    used: Mutex<HashSet<[u8; 16]>>,
+    calls: AtomicUsize,
+    last: Mutex<LastUse>,
+    fail: bool,
 }
 
 impl NonceStore for SpyStore {
-    fn insert(
-        &self,
-        _: &[u8],
-        nonce: &[u8; 16],
-        _: u64,
-        expires_at: u64,
-    ) -> Result<(), StoreError> {
-        self.inserts.fetch_add(1, Ordering::SeqCst);
-        if self.fail_insert {
+    fn consume(&self, u: &NonceUse<'_>) -> Result<bool, StoreError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        *self.last.lock().unwrap() = Some((u.session.to_vec(), u.issued_at, u.expires_at, u.now));
+        if self.fail {
             return Err(StoreError::Unavailable);
         }
-        self.nonces.lock().unwrap().insert(*nonce, expires_at);
-        Ok(())
-    }
-
-    fn take(&self, _: &[u8], nonce: &[u8; 16], now: u64) -> Result<bool, StoreError> {
-        self.takes.fetch_add(1, Ordering::SeqCst);
-        if self.fail_take {
-            return Err(StoreError::Unavailable);
-        }
-        Ok(self
-            .nonces
-            .lock()
-            .unwrap()
-            .remove(nonce)
-            .is_some_and(|e| e >= now))
+        Ok(self.used.lock().unwrap().insert(u.nonce))
     }
 }
 
@@ -77,26 +60,30 @@ fn csrf() -> Csrf {
     Csrf::new(KEY).unwrap()
 }
 
+fn store() -> MemoryStore {
+    MemoryStore::starting_at(1000, NOW - 3600)
+}
+
 #[test]
 fn test_once_token_passes_exactly_once() {
     let c = csrf();
-    let store = MemoryStore::new(1000);
+    let store = store();
     let b = Binding::new("s").scope("POST /pay").once(&store);
     let t = c.issue_at(&b, NOW, &mut TestPads(1)).unwrap();
     assert_eq!(t.len(), ONCE_TOKEN_LEN);
-    assert_eq!(store.len(), 1);
+    assert!(store.is_empty(), "issuing never touches the store");
     assert!(c.verify_at(&b, t.as_bytes(), NOW).is_ok());
+    assert_eq!(store.len(), 1);
     assert_eq!(
         c.verify_at(&b, t.as_bytes(), NOW).unwrap_err().reason(),
         Reason::AlreadyUsed
     );
-    assert!(store.is_empty());
 }
 
 #[test]
 fn test_once_tokens_are_independent() {
     let c = csrf();
-    let store = MemoryStore::new(1000);
+    let store = store();
     let b = Binding::new("s").once(&store);
     let mut pads = TestPads(2);
     let tokens: Vec<_> = (0..20)
@@ -114,12 +101,31 @@ fn test_once_tokens_are_independent() {
 }
 
 #[test]
+fn test_store_receives_the_documented_record() {
+    let c = Csrf::builder()
+        .key(KeyId(0), KEY)
+        .lifetime(std::time::Duration::from_secs(600))
+        .skew(std::time::Duration::from_secs(30))
+        .build()
+        .unwrap();
+    let spy = SpyStore::default();
+    let b = Binding::new("victim").once(&spy);
+    let t = c.issue_at(&b, NOW, &mut TestPads(3)).unwrap();
+    assert_eq!(spy.calls.load(Ordering::SeqCst), 0);
+    assert!(c.verify_at(&b, t.as_bytes(), NOW + 5).is_ok());
+    let (session, issued_at, expires_at, now) = spy.last.lock().unwrap().clone().unwrap();
+    assert_eq!(session, b"victim");
+    assert_eq!(issued_at, NOW);
+    assert_eq!(expires_at, NOW + 600 + 30, "lifetime plus skew");
+    assert_eq!(now, NOW + 5);
+}
+
+#[test]
 fn test_forged_and_wrong_tokens_never_reach_the_store() {
     let c = csrf();
     let store = SpyStore::default();
     let b = Binding::new("victim").scope("POST /pay").once(&store);
-    let t = c.issue_at(&b, NOW, &mut TestPads(3)).unwrap();
-    assert_eq!(store.inserts.load(Ordering::SeqCst), 1);
+    let t = c.issue_at(&b, NOW, &mut TestPads(4)).unwrap();
 
     // Every single-character change.
     let text = t.as_bytes().to_vec();
@@ -133,8 +139,8 @@ fn test_forged_and_wrong_tokens_never_reach_the_store() {
             assert!(c.verify_at(&b, &forged, NOW).is_err());
         }
     }
-    // Another session, another scope, no scope, expired, from the future,
-    // another key, a session token.
+    // Another session, another scope, expired, from the future, another key,
+    // a session token, nothing.
     let other = Binding::new("attacker").scope("POST /pay").once(&store);
     assert_eq!(
         c.verify_at(&other, t.as_bytes(), NOW).unwrap_err().reason(),
@@ -170,7 +176,7 @@ fn test_forged_and_wrong_tokens_never_reach_the_store() {
         .issue_at(
             &Binding::new("victim").scope("POST /pay"),
             NOW,
-            &mut TestPads(4),
+            &mut TestPads(5),
         )
         .unwrap();
     assert_eq!(
@@ -185,21 +191,21 @@ fn test_forged_and_wrong_tokens_never_reach_the_store() {
     );
 
     assert_eq!(
-        store.takes.load(Ordering::SeqCst),
+        store.calls.load(Ordering::SeqCst),
         0,
         "nothing forged reached the store"
     );
     // The genuine token still works afterwards: nobody burned it.
     assert!(c.verify_at(&b, t.as_bytes(), NOW).is_ok());
-    assert_eq!(store.takes.load(Ordering::SeqCst), 1);
+    assert_eq!(store.calls.load(Ordering::SeqCst), 1);
 }
 
 #[test]
 fn test_once_token_is_not_a_session_token() {
     let c = csrf();
-    let store = MemoryStore::new(10);
+    let store = store();
     let once = Binding::new("s").once(&store);
-    let t = c.issue_at(&once, NOW, &mut TestPads(5)).unwrap();
+    let t = c.issue_at(&once, NOW, &mut TestPads(6)).unwrap();
     assert_eq!(
         c.verify_at(&Binding::new("s"), t.as_bytes(), NOW)
             .unwrap_err()
@@ -209,23 +215,13 @@ fn test_once_token_is_not_a_session_token() {
 }
 
 #[test]
-fn test_store_failures_fail_closed() {
+fn test_store_failure_fails_closed() {
     let c = csrf();
-    let failing_insert = SpyStore {
-        fail_insert: true,
+    let failing = SpyStore {
+        fail: true,
         ..SpyStore::default()
     };
-    let b = Binding::new("s").once(&failing_insert);
-    assert_eq!(
-        c.issue_at(&b, NOW, &mut TestPads(6)).unwrap_err(),
-        Error::Store(StoreError::Unavailable)
-    );
-
-    let failing_take = SpyStore {
-        fail_take: true,
-        ..SpyStore::default()
-    };
-    let b = Binding::new("s").once(&failing_take);
+    let b = Binding::new("s").once(&failing);
     let t = c.issue_at(&b, NOW, &mut TestPads(7)).unwrap();
     assert_eq!(
         c.verify_at(&b, t.as_bytes(), NOW).unwrap_err().reason(),
@@ -234,28 +230,53 @@ fn test_store_failures_fail_closed() {
 }
 
 #[test]
-fn test_full_store_refuses_to_issue() {
+fn test_full_store_refuses_rather_than_forgets() {
     let c = csrf();
-    let store = MemoryStore::new(0); // one nonce per shard
+    let store = MemoryStore::starting_at(0, NOW - 3600); // one record per shard
     let b = Binding::new("s").once(&store);
     let mut pads = TestPads(8);
-    let mut issued = 0;
-    let mut full = 0;
+    let mut passed = 0;
+    let mut refused = 0;
     for _ in 0..1000 {
-        match c.issue_at(&b, NOW, &mut pads) {
-            Ok(_) => issued += 1,
-            Err(Error::Store(StoreError::Full)) => full += 1,
-            Err(e) => panic!("{e}"),
+        let t = c.issue_at(&b, NOW, &mut pads).unwrap();
+        match c.verify_at(&b, t.as_bytes(), NOW) {
+            Ok(_) => passed += 1,
+            Err(r) if r.reason() == Reason::StoreUnavailable => refused += 1,
+            Err(r) => panic!("{r}"),
         }
     }
-    assert!(issued <= 64 && full > 0, "issued {issued}, refused {full}");
-    assert_eq!(store.len(), issued);
+    assert!(
+        passed <= 64 && refused > 0,
+        "passed {passed}, refused {refused}"
+    );
+    assert_eq!(store.len(), passed);
+}
+
+#[test]
+fn test_restarted_memory_store_refuses_older_tokens() {
+    let c = csrf();
+    let before = store();
+    let b = Binding::new("s").once(&before);
+    let t = c.issue_at(&b, NOW, &mut TestPads(9)).unwrap();
+    assert!(c.verify_at(&b, t.as_bytes(), NOW).is_ok());
+    // The process restarts: a new, empty store that started after the token.
+    let after = MemoryStore::starting_at(1000, NOW + 10);
+    let b = Binding::new("s").once(&after);
+    assert_eq!(
+        c.verify_at(&b, t.as_bytes(), NOW + 20)
+            .unwrap_err()
+            .reason(),
+        Reason::AlreadyUsed
+    );
+    // Tokens issued after the restart work.
+    let fresh = c.issue_at(&b, NOW + 11, &mut TestPads(10)).unwrap();
+    assert!(c.verify_at(&b, fresh.as_bytes(), NOW + 20).is_ok());
 }
 
 #[test]
 fn test_concurrent_verifies_of_one_token_exactly_one_passes() {
     let c = Arc::new(csrf());
-    let store = Arc::new(MemoryStore::new(1000));
+    let store = Arc::new(store());
     for round in 0..20u64 {
         let token = {
             let b = Binding::new("s").once(&*store);
@@ -289,10 +310,13 @@ fn test_concurrent_verifies_of_one_token_exactly_one_passes() {
 
 #[test]
 fn test_once_binding_checks_the_token_in_every_mode() {
-    let store = MemoryStore::new(100);
+    let store = store();
     let b = Binding::new("s").once(&store);
     let same = RequestFacts::new("POST").fetch_site("same-origin");
-    for mode in [Mode::Strict, Mode::TokenOnly, Mode::PolicyOnly] {
+    for (i, mode) in [Mode::Strict, Mode::TokenOnly, Mode::PolicyOnly]
+        .into_iter()
+        .enumerate()
+    {
         let c = Csrf::builder()
             .key(KeyId(0), KEY)
             .mode(mode)
@@ -303,7 +327,7 @@ fn test_once_binding_checks_the_token_in_every_mode() {
             Reason::Missing,
             "{mode:?}"
         );
-        let t = c.issue_at(&b, NOW, &mut TestPads(9)).unwrap();
+        let t = c.issue_at(&b, NOW, &mut TestPads(11 + i as u64)).unwrap();
         let v = c.check_at(&same, &b, t.as_bytes(), NOW).unwrap();
         assert!(v.token_checked(), "{mode:?}");
         assert_eq!(
@@ -326,32 +350,25 @@ fn test_once_binding_checks_the_token_in_every_mode() {
 #[test]
 fn test_once_rotation_keeps_outstanding_tokens() {
     let c = csrf();
-    let store = MemoryStore::new(100);
+    let store = store();
     let b = Binding::new("s").once(&store);
-    let t = c.issue_at(&b, NOW, &mut TestPads(10)).unwrap();
+    let t = c.issue_at(&b, NOW, &mut TestPads(12)).unwrap();
     let c2 = c
         .rotated_at(KeyId(1), *b"rotated key for once tests......", NOW)
         .unwrap();
-    let v = c2.verify_at(&b, t.as_bytes(), NOW + 10).unwrap();
-    assert!(v.retired_key());
+    assert!(
+        c2.verify_at(&b, t.as_bytes(), NOW + 10)
+            .unwrap()
+            .retired_key()
+    );
 }
 
 #[test]
 fn test_once_token_matches_independent_implementation_of_the_format() {
     // Rebuild a version-2 token from docs/API.md "Token format" with crypt-io.
-    struct Recorder(Mutex<Option<[u8; 16]>>);
-    impl NonceStore for Recorder {
-        fn insert(&self, _: &[u8], n: &[u8; 16], _: u64, _: u64) -> Result<(), StoreError> {
-            *self.0.lock().unwrap() = Some(*n);
-            Ok(())
-        }
-        fn take(&self, _: &[u8], _: &[u8; 16], _: u64) -> Result<bool, StoreError> {
-            Ok(true)
-        }
-    }
-    let store = Recorder(Mutex::new(None));
     let session = b"kat-session";
     let scope = b"POST /kat";
+    let store = store();
     let c = csrf();
     let token = c
         .issue_at(
@@ -365,7 +382,6 @@ fn test_once_token_matches_independent_implementation_of_the_format() {
     let mut pads = TestPads(1);
     let mut nonce = [0u8; 16];
     pads.fill(&mut nonce).unwrap();
-    assert_eq!(store.0.lock().unwrap().unwrap(), nonce);
 
     let mut label = b"csrf-sec/v1 one-time-token mac key".to_vec();
     label.push(0);
@@ -402,9 +418,16 @@ fn test_once_token_matches_independent_implementation_of_the_format() {
 }
 
 #[test]
-fn test_tier2_once_with_memory_store() {
+fn test_tier2_once_with_a_store_that_started_earlier() {
     let c = csrf();
-    let store = MemoryStore::new(100);
+    // MemoryStore::new refuses tokens issued in its own first second; a store
+    // that started a minute ago accepts tokens issued now.
+    let started = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        - 60;
+    let store = MemoryStore::starting_at(100, started);
     let pay = Binding::new("session-1").scope("POST /pay").once(&store);
     let t = c.issue_with(&pay).unwrap();
     assert!(c.verify_with(&pay, &t).is_ok());

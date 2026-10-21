@@ -9,10 +9,10 @@ use crate::{
     binding::Binding,
     error::Error,
     key::{KEY_LEN, KeyId, Ring, Role, Slot},
-    once::NONCE_LEN,
+    once::{NONCE_LEN, NonceUse},
     pad::PadSource,
     policy::{Mode, Policy, RequestFacts},
-    token::{self, EPOCH, ONCE, SESSION, Token, Window},
+    token::{self, ONCE, SESSION, Token, Window},
     verdict::{OriginCheck, Reason, Rejected, Verdict, Verified},
 };
 
@@ -116,14 +116,13 @@ impl Csrf {
     /// from `pads`. Works without `std`.
     ///
     /// For a one-time binding ([`Binding::once`]) the nonce also comes from
-    /// `pads`, and is recorded in the store before the token is returned.
+    /// `pads`. Issuing never touches the store.
     ///
     /// # Errors
     ///
     /// [`Error::EmptySession`] for an empty session id, [`Error::Clock`] when
-    /// `now` is outside 2020 to 2156, [`Error::Random`] when `pads` fails,
-    /// [`Error::Store`] when the one-time store refuses. No token is issued on
-    /// error.
+    /// `now` is outside 2020 to 2156, [`Error::Random`] when `pads` fails. No
+    /// token is issued on error.
     pub fn issue_at<P: PadSource + ?Sized>(
         &self,
         binding: &Binding<'_>,
@@ -135,30 +134,35 @@ impl Csrf {
         }
         let issued_at = token::issued_at(now)?;
         let slot = self.ring.signing();
-        let Some(store) = binding.store else {
+        if binding.store.is_none() {
             return token::issue(SESSION, slot, binding, issued_at, &[], pads);
-        };
+        }
         let mut nonce = [0u8; NONCE_LEN];
         pads.fill(&mut nonce)?;
-        let token = token::issue(ONCE, slot, binding, issued_at, &nonce, pads)?;
-        let expires_at = EPOCH + u64::from(issued_at) + u64::from(self.window.lifetime);
-        store
-            .insert(binding.session, &nonce, now, expires_at)
-            .map_err(Error::Store)?;
-        Ok(token)
+        token::issue(ONCE, slot, binding, issued_at, &nonce, pads)
     }
 
     /// Verify a token against `binding` at `now` (unix seconds). Layer 2 only.
     /// Works without `std`.
     ///
-    /// For a one-time binding, the store is asked to consume the nonce only
-    /// after the MAC, the validity window, and the scope passed.
+    /// For a one-time binding, the store records the nonce as used only after
+    /// the MAC, the validity window, and the scope passed.
     pub fn verify_at(&self, binding: &Binding<'_>, token: &[u8], now: u64) -> Verdict {
         let Some(store) = binding.store else {
             return token::verify_session(&self.ring, self.window, binding, token, now);
         };
         let opened = token::open(ONCE, &self.ring, self.window, binding, token, now)?;
-        match store.take(binding.session, &opened.nonce(), now) {
+        let issued_at = opened.issued_at();
+        let use_ = NonceUse {
+            session: binding.session,
+            nonce: opened.nonce(),
+            issued_at,
+            expires_at: issued_at
+                .saturating_add(u64::from(self.window.lifetime))
+                .saturating_add(u64::from(self.window.skew)),
+            now,
+        };
+        match store.consume(&use_) {
             Ok(true) => Ok(opened.verified()),
             Ok(false) => Err(Rejected::new(Reason::AlreadyUsed)),
             Err(_) => Err(Rejected::new(Reason::StoreUnavailable)),

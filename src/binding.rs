@@ -74,11 +74,12 @@ impl<'a> Binding<'a> {
         self
     }
 
-    /// Make the token one-time: `issue_with` records its nonce in `store`, and
-    /// the first successful verify removes it, so a second use fails as
-    /// [`Reason::AlreadyUsed`](crate::Reason::AlreadyUsed). One-time tokens
-    /// are [`ONCE_TOKEN_LEN`](crate::ONCE_TOKEN_LEN) characters. A one-time
-    /// binding always checks the token, whatever the [`Mode`](crate::Mode).
+    /// Make the token one-time: the first successful verify records its nonce
+    /// in `store`, so a second use fails as
+    /// [`Reason::AlreadyUsed`](crate::Reason::AlreadyUsed). Issuing does not
+    /// touch the store. One-time tokens are
+    /// [`ONCE_TOKEN_LEN`](crate::ONCE_TOKEN_LEN) characters. A one-time binding
+    /// always checks the token, whatever the [`Mode`](crate::Mode).
     #[must_use]
     pub fn once(mut self, store: &'a dyn NonceStore) -> Self {
         self.store = Some(store);

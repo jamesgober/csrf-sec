@@ -330,6 +330,17 @@ pub(crate) struct Opened<'r> {
 }
 
 impl Opened<'_> {
+    /// When the token was issued, in unix seconds.
+    pub(crate) fn issued_at(&self) -> u64 {
+        EPOCH
+            + u64::from(u32::from_le_bytes([
+                self.raw[2],
+                self.raw[3],
+                self.raw[4],
+                self.raw[5],
+            ]))
+    }
+
     /// The nonce of a one-time token.
     pub(crate) fn nonce(&self) -> [u8; NONCE_LEN] {
         let mut nonce = [0u8; NONCE_LEN];

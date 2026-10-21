@@ -11,7 +11,9 @@ use std::{
 
 use std::sync::Mutex;
 
-use csrf_sec::{Binding, Csrf, Error, KeyId, NonceStore, PadSource, RequestFacts, StoreError};
+use csrf_sec::{
+    Binding, Csrf, Error, KeyId, NonceStore, NonceUse, PadSource, RequestFacts, StoreError,
+};
 
 struct Counting;
 
@@ -67,23 +69,17 @@ const NOW: u64 = 1_792_540_800;
 struct ArrayStore(Mutex<[Option<[u8; 16]>; 8]>);
 
 impl NonceStore for ArrayStore {
-    fn insert(&self, _: &[u8], nonce: &[u8; 16], _: u64, _: u64) -> Result<(), StoreError> {
+    fn consume(&self, u: &NonceUse<'_>) -> Result<bool, StoreError> {
         let mut slots = self.0.lock().map_err(|_| StoreError::Unavailable)?;
+        if slots.iter().any(|s| s.as_ref() == Some(&u.nonce)) {
+            return Ok(false);
+        }
         let free = slots
             .iter_mut()
             .find(|s| s.is_none())
             .ok_or(StoreError::Full)?;
-        *free = Some(*nonce);
-        Ok(())
-    }
-
-    fn take(&self, _: &[u8], nonce: &[u8; 16], _: u64) -> Result<bool, StoreError> {
-        let mut slots = self.0.lock().map_err(|_| StoreError::Unavailable)?;
-        Ok(slots
-            .iter_mut()
-            .find(|s| s.as_ref() == Some(nonce))
-            .map(|s| *s = None)
-            .is_some())
+        *free = Some(u.nonce);
+        Ok(true)
     }
 }
 

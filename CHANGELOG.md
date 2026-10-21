@@ -22,23 +22,28 @@ One-time tokens.
 - `Binding::once(&store)` makes a token one-time: format version 2, a 128-bit
   nonce inside the MAC, its own subkey, 102 characters (`ONCE_TOKEN_LEN`).
   The MAC, validity window, and scope are checked before the store is
-  touched, so forged requests never reach it.
-- `NonceStore` trait (`insert`, atomic `take`) and `StoreError`; `MemoryStore`
-  (feature `std`): 64 shards, bounded, expiring, refuses when full.
-- `Reason::AlreadyUsed` (severity 20), `Reason::StoreUnavailable` (5), and
-  `Error::Store`; store failures fail closed.
+  consulted, so forged requests never reach it.
+- `NonceStore` trait with one atomic call, `consume(&NonceUse)`, that records
+  a used nonce and passes only its first use; `NonceUse` and `StoreError`.
+  Issuing never touches the store.
+- `MemoryStore` (feature `std`): 64 shards, bounded, expiring, refuses when
+  full, and refuses tokens issued before it started so a restart cannot replay
+  a used token. `MemoryStore::starting_at` for an explicit start.
+- `Reason::AlreadyUsed` (severity 20) and `Reason::StoreUnavailable` (5); store
+  failures fail closed.
 - `NONCE_LEN` constant.
-- Tests: single use, independence of many tokens, a spy store proving forged
-  and mismatched tokens never reach `take`, fail-closed store errors, a full
-  store refusing to issue, exactly one winner among concurrent verifies,
-  every mode, rotation, zero allocation on the one-time path, and an
-  independent reimplementation of the version-2 format.
+- Tests: single use, independence of many tokens, the record a store receives,
+  a spy store proving forged and mismatched tokens never reach it and issuing
+  never calls it, a failing store, a full store, a restarted store, exactly one
+  winner among concurrent verifies, every mode, rotation, zero allocation on
+  the one-time path, and an independent reimplementation of the version-2
+  format.
 
 ### Changed
 
-- `NonceStore::insert` takes `now` as well as `expires_at` (design-lock
-  signature had only `expires_at`), so bounded stores can purge before
-  refusing.
+- The store design from the `0.2.0` design lock (`insert` on issue, `take` on
+  verify) is replaced by `consume` on verify only: the MAC already proves
+  issuance, so the store records only used tokens (PLAN D-035).
 - In `PolicyOnly` mode, a one-time binding still checks the token.
 
 ---

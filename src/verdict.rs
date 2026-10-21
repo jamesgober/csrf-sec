@@ -56,7 +56,8 @@ pub enum Reason {
     /// The check cannot run: no session id was given, or `PolicyOnly` mode
     /// got a request without Fetch Metadata.
     Unverifiable,
-    /// A one-time token was presented again, or its record expired.
+    /// A one-time token was presented again (or the store cannot vouch that
+    /// it was not, for example after a restart).
     AlreadyUsed,
     /// The one-time token store could not answer.
     StoreUnavailable,

@@ -104,7 +104,7 @@ pub use crate::{
     csrf::{Builder, Csrf, DEFAULT_LIFETIME, DEFAULT_SKEW},
     error::Error,
     key::{KEY_LEN, KeyId, MAX_KEYS},
-    once::{NONCE_LEN, NonceStore, ONCE_TOKEN_LEN, StoreError},
+    once::{NONCE_LEN, NonceStore, NonceUse, ONCE_TOKEN_LEN, StoreError},
     pad::PadSource,
     policy::{FetchSite, MethodClass, Mode, RequestFacts},
     token::{TOKEN_LEN, Token},

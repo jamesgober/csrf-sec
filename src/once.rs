@@ -1,11 +1,14 @@
 //! One-time tokens: the store seam and an in-memory store.
 //!
 //! A one-time token is a signed token with a 128-bit random nonce inside the
-//! MAC (format version 2). Issuing records the nonce in a [`NonceStore`];
-//! verifying checks the MAC, the validity window, and the scope **first**, and
-//! only then asks the store to remove the nonce. Forged requests therefore
-//! never reach the store: a cross-site attacker cannot burn a user's one-time
-//! token with a wrong one, and cannot put load on a shared store.
+//! MAC (format version 2). The MAC already proves the token was issued by this
+//! key ring, so the store does not need to know which tokens were issued: it
+//! only remembers which nonces were **used**. Issuing never touches the store.
+//!
+//! Verifying checks the MAC, the validity window, and the scope **first**, and
+//! only then asks the store to record the nonce as used. Forged requests
+//! therefore never reach the store: a cross-site attacker cannot burn a user's
+//! one-time token with a wrong one, and cannot put load on a shared store.
 
 use core::fmt;
 
@@ -17,16 +20,15 @@ pub const NONCE_LEN: usize = 16;
 
 /// Why a [`NonceStore`] could not answer.
 ///
-/// On issue this becomes [`Error::Store`](crate::Error::Store) (no token is
-/// issued); on verify it becomes
-/// [`Reason::StoreUnavailable`](crate::Reason::StoreUnavailable) (the request
-/// is refused). Either way the answer is no.
+/// On verify this becomes
+/// [`Reason::StoreUnavailable`](crate::Reason::StoreUnavailable): the request
+/// is refused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum StoreError {
     /// The store could not be reached or failed.
     Unavailable,
-    /// The store is full of unexpired nonces.
+    /// The store is full of unexpired records.
     Full,
 }
 
@@ -34,69 +36,88 @@ impl fmt::Display for StoreError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             Self::Unavailable => "the one-time token store is unavailable",
-            Self::Full => "the one-time token store is full of unexpired tokens",
+            Self::Full => "the one-time token store is full of unexpired records",
         })
     }
 }
 
 impl core::error::Error for StoreError {}
 
-/// Where one-time tokens' nonces live between issue and use.
+/// One use of a one-time token, handed to [`NonceStore::consume`] after the
+/// token's MAC, validity window, and scope passed.
 ///
-/// Implement it over your session store (for a cluster, a store every node
-/// reaches). [`MemoryStore`] serves one node and tests.
+/// All times are unix seconds.
+#[derive(Clone, Copy)]
+#[non_exhaustive]
+pub struct NonceUse<'a> {
+    /// The session the token is bound to (already proven by the MAC).
+    pub session: &'a [u8],
+    /// The token's nonce: 128 random bits csrf-sec generated at issue.
+    pub nonce: [u8; NONCE_LEN],
+    /// When the token was issued.
+    pub issued_at: u64,
+    /// Keep the record at least until this time: the token's lifetime plus
+    /// the configured skew, so a node whose clock lags still finds it.
+    pub expires_at: u64,
+    /// The verifying node's current time.
+    pub now: u64,
+}
+
+impl fmt::Debug for NonceUse<'_> {
+    /// The session id may be a secret, so only its length is shown.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("NonceUse")
+            .field("session_len", &self.session.len())
+            .field("issued_at", &self.issued_at)
+            .field("expires_at", &self.expires_at)
+            .field("now", &self.now)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Remembers which one-time tokens were used.
+///
+/// Implement it over a store every node reaches for a cluster (WASP: the
+/// gates' session store); [`MemoryStore`] serves one node and tests.
 ///
 /// # Contract
 ///
-/// - `insert` records `nonce` for `session` until `expires_at` (unix seconds,
-///   inclusive). Nonces are 128-bit random values that csrf-sec generated; they
-///   never collide in practice and are never chosen by a client.
-/// - `take` **atomically** removes the record and returns `true` only if it
-///   existed and had not expired at `now`. Two concurrent `take` calls for the
-///   same nonce must not both return `true`.
-/// - `take` is called only for tokens whose MAC, validity window, and scope
-///   already passed, so it never sees forged input.
-/// - Any failure returns a [`StoreError`]; csrf-sec then fails closed.
+/// `consume` **atomically** records `use_.nonce` as used and returns:
+///
+/// - `Ok(true)` when this is the first use: the request passes;
+/// - `Ok(false)` when the nonce was already recorded, or when the store cannot
+///   vouch that it was not (for example the token was issued before the store's
+///   memory began): the request is refused as
+///   [`AlreadyUsed`](crate::Reason::AlreadyUsed);
+/// - `Err(_)` when the store cannot answer: the request is refused as
+///   [`StoreUnavailable`](crate::Reason::StoreUnavailable).
+///
+/// Two concurrent calls for one nonce must not both return `Ok(true)` (in a
+/// key-value store: set-if-absent with an expiry of `use_.expires_at`). The
+/// record must be kept until `use_.expires_at`. `consume` is called only for
+/// tokens whose MAC, validity window, and scope already passed, so it never
+/// sees forged input, and nonces are never chosen by a client.
 ///
 /// ```
 /// use std::{collections::HashSet, sync::Mutex};
-/// use csrf_sec::{NonceStore, StoreError};
+/// use csrf_sec::{NonceStore, NonceUse, StoreError};
 ///
 /// struct Simple(Mutex<HashSet<[u8; 16]>>);
 ///
 /// impl NonceStore for Simple {
-///     fn insert(&self, _session: &[u8], nonce: &[u8; 16], _now: u64, _expires_at: u64)
-///         -> Result<(), StoreError> {
-///         self.0.lock().map_err(|_| StoreError::Unavailable)?.insert(*nonce);
-///         Ok(())
-///     }
-///     fn take(&self, _session: &[u8], nonce: &[u8; 16], _now: u64) -> Result<bool, StoreError> {
-///         Ok(self.0.lock().map_err(|_| StoreError::Unavailable)?.remove(nonce))
+///     fn consume(&self, use_: &NonceUse<'_>) -> Result<bool, StoreError> {
+///         let mut used = self.0.lock().map_err(|_| StoreError::Unavailable)?;
+///         Ok(used.insert(use_.nonce))
 ///     }
 /// }
 /// ```
 pub trait NonceStore {
-    /// Record `nonce` for `session` until `expires_at`. `now` is the issue
-    /// time, for stores that purge expired entries.
-    ///
-    /// # Errors
-    ///
-    /// [`StoreError`] when the nonce could not be recorded; no token is issued.
-    fn insert(
-        &self,
-        session: &[u8],
-        nonce: &[u8; NONCE_LEN],
-        now: u64,
-        expires_at: u64,
-    ) -> Result<(), StoreError>;
-
-    /// Atomically remove `nonce` and report whether it was present and
-    /// unexpired at `now`.
+    /// Record the nonce as used; `Ok(true)` only for its first use.
     ///
     /// # Errors
     ///
     /// [`StoreError`] when the store cannot answer; the request is refused.
-    fn take(&self, session: &[u8], nonce: &[u8; NONCE_LEN], now: u64) -> Result<bool, StoreError>;
+    fn consume(&self, use_: &NonceUse<'_>) -> Result<bool, StoreError>;
 }
 
 #[cfg(feature = "std")]
@@ -110,14 +131,14 @@ mod memory {
         sync::{Mutex, PoisonError},
     };
 
-    use super::{NONCE_LEN, NonceStore, StoreError};
+    use super::{NONCE_LEN, NonceStore, NonceUse, StoreError};
 
     /// Number of independently locked shards.
     const SHARDS: usize = 64;
 
     /// Hashes a nonce by its first eight bytes.
     ///
-    /// Nonces are uniformly random values csrf-sec generated, and `take` is
+    /// Nonces are uniformly random values csrf-sec generated, and `consume` is
     /// only reached after the MAC passed, so a client can never choose the keys
     /// this map sees: a keyed (flood-resistant) hash would buy nothing here.
     #[derive(Default)]
@@ -137,47 +158,61 @@ mod memory {
         fn write_usize(&mut self, _: usize) {}
     }
 
+    /// Used nonces and the time each record may be dropped.
     type Shard = HashMap<[u8; NONCE_LEN], u64, BuildHasherDefault<NonceHasher>>;
 
     /// An in-memory [`NonceStore`]: sharded, bounded, and expiring.
     ///
-    /// 64 shards, each behind its own short-held lock, so concurrent issue and
-    /// verify calls rarely contend. Each shard holds at most
-    /// `capacity / 64` (rounded up) nonces; a full shard first drops expired
-    /// entries, then refuses with [`StoreError::Full`] (fail closed: the form
-    /// cannot be rendered rather than an older token being forgotten).
+    /// It remembers used nonces in 64 shards, each behind its own short-held
+    /// lock, so concurrent verifies rarely contend. Each shard holds at most
+    /// `capacity / 64` (rounded up) records; a full shard drops expired records
+    /// first, then refuses with [`StoreError::Full`] (fail closed). Only
+    /// submitted tokens take space: issuing never touches the store.
     ///
-    /// It serves a single node and tests. Nonces live only in this process: a
-    /// restart forgets them (outstanding one-time tokens then fail as
-    /// `AlreadyUsed`), and other nodes cannot see them. For a cluster,
-    /// implement [`NonceStore`] over a shared store.
+    /// Memory lives in this process only. So that a restart cannot let a used
+    /// token pass again, the store refuses (as already used) every token issued
+    /// at or before the second it started. For a cluster, implement
+    /// [`NonceStore`] over a store every node reaches.
     ///
-    /// Memory: about 40 bytes per outstanding nonce [est.].
+    /// Memory: about 40 bytes per record [est.].
     ///
     /// ```
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
-    /// use csrf_sec::{Binding, Csrf, MemoryStore, Reason};
+    /// use csrf_sec::{Binding, Csrf, MemoryStore, OsPads, Reason};
     ///
     /// let csrf = Csrf::new(*b"an example key, 32 bytes long!!!")?;
-    /// let store = MemoryStore::new(100_000);
+    /// let started = 1_800_000_000; // MemoryStore::new reads the system clock
+    /// let store = MemoryStore::starting_at(100_000, started);
     /// let pay = Binding::new("session-1").scope("POST /pay").once(&store);
     ///
-    /// let token = csrf.issue_with(&pay)?;
-    /// csrf.verify_with(&pay, &token)?;
-    /// assert_eq!(csrf.verify_with(&pay, &token).unwrap_err().reason(), Reason::AlreadyUsed);
+    /// let token = csrf.issue_at(&pay, started + 5, &mut OsPads)?;
+    /// csrf.verify_at(&pay, token.as_bytes(), started + 30)?;
+    /// let again = csrf.verify_at(&pay, token.as_bytes(), started + 31);
+    /// assert_eq!(again.unwrap_err().reason(), Reason::AlreadyUsed);
     /// # Ok(())
     /// # }
     /// ```
     pub struct MemoryStore {
         shards: Box<[Mutex<Shard>]>,
         shard_capacity: usize,
+        started_at: u64,
     }
 
     impl MemoryStore {
-        /// A store for up to about `capacity` outstanding nonces (at least
-        /// one per shard).
+        /// A store for about `capacity` used-token records (at least one per
+        /// shard), starting now by the system clock.
         #[must_use]
         pub fn new(capacity: usize) -> Self {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_secs());
+            Self::starting_at(capacity, now)
+        }
+
+        /// A store whose memory begins at `started_at` (unix seconds): tokens
+        /// issued at or before it are refused as already used.
+        #[must_use]
+        pub fn starting_at(capacity: usize, started_at: u64) -> Self {
             let shards = (0..SHARDS)
                 .map(|_| Mutex::new(Shard::default()))
                 .collect::<Vec<_>>()
@@ -185,23 +220,24 @@ mod memory {
             Self {
                 shards,
                 shard_capacity: capacity.div_ceil(SHARDS).max(1),
+                started_at,
             }
         }
 
-        /// Outstanding nonces, including expired ones not yet purged.
+        /// Records held, including expired ones not yet dropped.
         #[must_use]
         pub fn len(&self) -> usize {
             self.shards.iter().map(|s| lock(s).len()).sum()
         }
 
-        /// `true` when no nonce is outstanding.
+        /// `true` when no record is held.
         #[must_use]
         pub fn is_empty(&self) -> bool {
             self.len() == 0
         }
 
-        /// Drop every nonce that expired before `now`. Optional: full shards
-        /// purge themselves.
+        /// Drop every record that expired before `now`. Optional: full shards
+        /// drop their own expired records.
         pub fn purge_expired(&self, now: u64) {
             for shard in self.shards.iter() {
                 lock(shard).retain(|_, expires_at| *expires_at >= now);
@@ -222,32 +258,23 @@ mod memory {
     }
 
     impl NonceStore for MemoryStore {
-        fn insert(
-            &self,
-            _session: &[u8],
-            nonce: &[u8; NONCE_LEN],
-            now: u64,
-            expires_at: u64,
-        ) -> Result<(), StoreError> {
-            let mut shard = lock(self.shard(nonce));
+        fn consume(&self, use_: &NonceUse<'_>) -> Result<bool, StoreError> {
+            if use_.issued_at <= self.started_at {
+                // Possibly used before this store's memory began.
+                return Ok(false);
+            }
+            let mut shard = lock(self.shard(&use_.nonce));
+            if shard.contains_key(&use_.nonce) {
+                return Ok(false);
+            }
             if shard.len() >= self.shard_capacity {
-                shard.retain(|_, e| *e >= now);
+                shard.retain(|_, expires_at| *expires_at >= use_.now);
                 if shard.len() >= self.shard_capacity {
                     return Err(StoreError::Full);
                 }
             }
-            shard.insert(*nonce, expires_at);
-            Ok(())
-        }
-
-        fn take(
-            &self,
-            _session: &[u8],
-            nonce: &[u8; NONCE_LEN],
-            now: u64,
-        ) -> Result<bool, StoreError> {
-            let removed = lock(self.shard(nonce)).remove(nonce);
-            Ok(removed.is_some_and(|expires_at| expires_at >= now))
+            shard.insert(use_.nonce, use_.expires_at);
+            Ok(true)
         }
     }
 
@@ -256,6 +283,7 @@ mod memory {
             f.debug_struct("MemoryStore")
                 .field("shards", &SHARDS)
                 .field("shard_capacity", &self.shard_capacity)
+                .field("started_at", &self.started_at)
                 .finish_non_exhaustive()
         }
     }
@@ -265,7 +293,7 @@ mod memory {
         use std::sync::{Arc, Barrier};
 
         use super::{MemoryStore, SHARDS};
-        use crate::{NonceStore, StoreError};
+        use crate::{NonceStore, NonceUse, StoreError};
 
         fn nonce(i: u32) -> [u8; 16] {
             let mut n = [0u8; 16];
@@ -274,55 +302,64 @@ mod memory {
             n
         }
 
-        #[test]
-        fn test_memory_store_take_once() {
-            let s = MemoryStore::new(10);
-            s.insert(b"s", &nonce(1), 0, 100).unwrap();
-            assert_eq!(s.len(), 1);
-            assert_eq!(s.take(b"s", &nonce(1), 50), Ok(true));
-            assert_eq!(s.take(b"s", &nonce(1), 50), Ok(false));
-            assert!(s.is_empty());
+        fn use_(nonce: [u8; 16], issued_at: u64, expires_at: u64, now: u64) -> NonceUse<'static> {
+            NonceUse {
+                session: b"s",
+                nonce,
+                issued_at,
+                expires_at,
+                now,
+            }
         }
 
         #[test]
-        fn test_memory_store_expiry_inclusive() {
-            let s = MemoryStore::new(10);
-            s.insert(b"s", &nonce(1), 0, 100).unwrap();
-            s.insert(b"s", &nonce(2), 0, 100).unwrap();
-            assert_eq!(s.take(b"s", &nonce(1), 100), Ok(true));
-            assert_eq!(s.take(b"s", &nonce(2), 101), Ok(false));
-            assert_eq!(s.take(b"s", &nonce(3), 0), Ok(false));
+        fn test_memory_store_consume_once() {
+            let s = MemoryStore::starting_at(10, 0);
+            assert_eq!(s.consume(&use_(nonce(1), 5, 100, 10)), Ok(true));
+            assert_eq!(s.consume(&use_(nonce(1), 5, 100, 11)), Ok(false));
+            assert_eq!(s.consume(&use_(nonce(2), 5, 100, 11)), Ok(true));
+            assert_eq!(s.len(), 2);
+        }
+
+        #[test]
+        fn test_memory_store_refuses_tokens_from_before_its_start() {
+            let s = MemoryStore::starting_at(10, 1000);
+            assert_eq!(s.consume(&use_(nonce(1), 999, 2000, 1001)), Ok(false));
+            assert_eq!(s.consume(&use_(nonce(2), 1000, 2000, 1001)), Ok(false));
+            assert_eq!(s.consume(&use_(nonce(3), 1001, 2000, 1001)), Ok(true));
+            assert!(s.len() == 1);
         }
 
         #[test]
         fn test_memory_store_full_shard_purges_then_refuses() {
-            let s = MemoryStore::new(SHARDS); // one per shard
+            let s = MemoryStore::starting_at(SHARDS, 0); // one record per shard
             let a = [7u8; 16];
             let mut b = [9u8; 16];
             b[15] = 7; // same shard as `a`
-            s.insert(b"s", &a, 0, 10).unwrap();
-            assert_eq!(s.insert(b"s", &b, 5, 20), Err(StoreError::Full));
-            // Once `a` expired, the shard makes room.
-            s.insert(b"s", &b, 11, 20).unwrap();
-            assert_eq!(s.take(b"s", &a, 11), Ok(false));
-            assert_eq!(s.take(b"s", &b, 11), Ok(true));
+            assert_eq!(s.consume(&use_(a, 1, 10, 5)), Ok(true));
+            assert_eq!(s.consume(&use_(b, 1, 20, 5)), Err(StoreError::Full));
+            // Once `a` expired, the shard makes room; `a` is forgotten, which
+            // is safe because the token itself has expired by then.
+            assert_eq!(s.consume(&use_(b, 1, 20, 11)), Ok(true));
+            assert_eq!(s.len(), 1);
         }
 
         #[test]
         fn test_memory_store_purge_expired() {
-            let s = MemoryStore::new(1000);
+            let s = MemoryStore::starting_at(1000, 0);
             for i in 0..100 {
-                s.insert(b"s", &nonce(i), 0, u64::from(i)).unwrap();
+                assert_eq!(s.consume(&use_(nonce(i), 1, u64::from(i), 0)), Ok(true));
             }
             s.purge_expired(50);
             assert_eq!(s.len(), 50);
+            s.purge_expired(u64::MAX);
+            assert!(s.is_empty());
         }
 
         #[test]
-        fn test_memory_store_concurrent_take_exactly_one_wins() {
-            let s = Arc::new(MemoryStore::new(1000));
+        fn test_memory_store_concurrent_consume_exactly_one_wins() {
+            let s = Arc::new(MemoryStore::starting_at(1000, 0));
             for round in 0..50u32 {
-                s.insert(b"s", &nonce(round), 0, 100).unwrap();
                 let threads = 8;
                 let barrier = Arc::new(Barrier::new(threads));
                 let handles: Vec<_> = (0..threads)
@@ -330,7 +367,7 @@ mod memory {
                         let (s, barrier) = (Arc::clone(&s), Arc::clone(&barrier));
                         std::thread::spawn(move || {
                             barrier.wait();
-                            s.take(b"s", &nonce(round), 1).unwrap()
+                            s.consume(&use_(nonce(round), 1, 100, 2)).unwrap()
                         })
                     })
                     .collect();
@@ -344,10 +381,28 @@ mod memory {
         }
 
         #[test]
-        fn test_memory_store_debug_and_min_capacity() {
+        fn test_memory_store_new_uses_the_system_clock() {
             let s = MemoryStore::new(0);
             assert!(format!("{s:?}").contains("shard_capacity: 1"));
-            s.insert(b"s", &nonce(1), 0, 1).unwrap();
+            // A token issued long ago predates this store.
+            assert_eq!(
+                s.consume(&use_(nonce(1), 1_600_000_000, u64::MAX, 0)),
+                Ok(false)
+            );
+        }
+
+        #[test]
+        fn test_nonce_use_debug_hides_session() {
+            let u = NonceUse {
+                session: b"secret-session",
+                nonce: [0; 16],
+                issued_at: 1,
+                expires_at: 2,
+                now: 1,
+            };
+            let text = format!("{u:?}");
+            assert!(!text.contains("secret"));
+            assert!(text.contains("session_len: 14"));
         }
     }
 }
