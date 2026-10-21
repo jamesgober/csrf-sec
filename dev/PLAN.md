@@ -4,7 +4,7 @@
 >
 > **Read order:** [`../REPS.md`](../REPS.md) &rarr; [`DIRECTIVES.md`](./DIRECTIVES.md) &rarr; **this file** &rarr; [`ROADMAP.md`](./ROADMAP.md).
 >
-> **Status:** scaffold, `0.1.0`. Design lock is `0.2.0`.
+> **Status:** design locked, `0.2.0`. The public surface is in [`../docs/API.md`](../docs/API.md); code lands from `0.3.0`.
 
 ---
 
@@ -144,11 +144,13 @@ One-time tokens (consumed on use) are available for high-value actions through t
 | issued at | 4 | UTC seconds since 2020-01-01 (good until 2156) |
 | tag | 16 | keyed BLAKE3 over the fields below, truncated to 128 bits |
 
-MAC input (nothing secret appears in the token itself):
+MAC input (nothing secret appears in the token itself), little-endian integers, lengths as LEB128 varints (D-008):
 
 ```
- "csrf-sec/v1" (domain separation) | version | key id | issued at | session id | scope (empty if none)
+ version | key id | issued at | varint(len session) | varint(len scope) | session id | scope (empty if none)
 ```
+
+The tag is the first 16 bytes of keyed BLAKE3 under a **subkey** derived from the application key, the key id, and a label per token kind (D-009). Domain separation lives in the key, not in a text prefix of every MAC input, so a 43-character session id with no scope fits in one 64-byte BLAKE3 block.
 
 The session id is inside the MAC, not inside the token: the token reveals nothing about the session.
 
@@ -168,7 +170,7 @@ A token can be issued for one action (`"POST /account/email"`). It then passes o
 
 ### 5.5 Stateful mode (optional seam)
 
-A `TokenStore` trait for one-time tokens: issue stores a random 32-byte value in the session record; verify compares in constant time and deletes it. Default: none (stateless). WASP implements the trait over the gates' session store. The exact shape of the seam is settled at design lock (O-4).
+One-time tokens for high-value actions (D-011). A one-time token is a signed token with a 128-bit random nonce inside the MAC (raw 38 bytes, text 102 characters, version 2, its own subkey label). A `NonceStore` holds the outstanding nonces: issue inserts the nonce with an expiry; verify checks the MAC, lifetime, and scope **first**, and only then asks the store to remove the nonce atomically. Forged requests never reach the store, so they cannot burn a user's token or put load on a shared store. A store that cannot answer fails closed. Default: none (stateless). `MemoryStore` (sharded, bounded) serves single nodes and tests; WASP implements the trait over the gates' session store.
 
 ---
 
@@ -176,7 +178,9 @@ A `TokenStore` trait for one-time tokens: issue stores a random 32-byte value in
 
 - Keys are 32 bytes. The recommended source is a master secret held in key-vault, with the CSRF key derived by HKDF (`info = "csrf-sec v1"`, crypt-io), so CSRF never shares a key with anything else.
 - **Persist the key or derive it from a persisted master.** Random keys created at boot make every open form fail after a restart.
-- `KeyRing`: one current key (signs) plus retired keys (verify only, until their retire time). Rotation adds a new current key; old tokens keep verifying until the token lifetime passes, so nobody is logged out or loses a form.
+- The ring holds up to 16 keys in three roles (D-017): one **signing** key; **accepted** keys (verify only, no end: a new key staged on every node before any node signs with it); and **retired** keys (verify only, until their retire time). Rotation adds a new signing key; old tokens keep verifying until the token lifetime passes, so nobody is logged out or loses a form.
+- In a cluster, rotation is two steps: deploy the new key as accepted everywhere, then promote it to signing. No node ever receives a token signed with a key it does not know.
+- The application key is never used as a MAC key and is not kept: subkeys are derived at construction and wiped on drop (D-009). Keys whose bytes are all equal are refused (D-024).
 - Key ids are 1 byte; a retired id is never reused while tokens signed by it can still be presented.
 - The library holds no mutable state: rotation builds a new `Csrf` value (`csrf.rotated(new_key)`), and the application swaps it (WASP: a `Snapshot`). The verify path therefore takes no lock and touches no shared counter.
 
@@ -216,14 +220,24 @@ A session mismatch shows up as `BadMac`, because the session id is inside the MA
 | `WrongScope` | a token taken from another form | 20 |
 | `CrossSite` | layer 1: a cross-site unsafe request | 30 |
 | `OriginMismatch` | layer 1: a foreign origin | 30 |
+| `NotYetValid` | a node clock ahead by more than the skew (D-012) | 5 |
+| `Unverifiable` | the check cannot run: no session id, or no Fetch Metadata in `PolicyOnly` (D-012) | 5 |
+| `AlreadyUsed` | a one-time token presented twice (D-012) | 20 |
+| `StoreUnavailable` | the one-time store could not answer (D-012) | 5 |
 
-The reason is for logs and scoring only. Clients receive a generic refusal.
+The reason is for logs and scoring only. Clients receive a generic refusal. `RetiredKey` is not a rejection: a token signed by a retired key passes and reports it through `Verified::retired_key()`.
+
+`WrongScope` is reported when a token issued without a scope is presented to a scoped binding (found by a second MAC over the empty scope, only on the failure path). A token issued for a **different** scope fails as `BadMac`: its scope is inside the MAC and cannot be recovered, so it is indistinguishable from a forgery (D-012).
+
+### 7.3 Validity window
+
+Expired when `now > issued_at + lifetime`; not yet valid when `issued_at > now + skew`; both boundaries are inclusive of the valid side. `issue` refuses to mint a token when the clock is outside 2020-01-01 to 2156-02-07 (D-023).
 
 ---
 
 ## 8. API shape
 
-The planned shape; the exact surface is written into `docs/API.md` at design lock (`0.2.0`).
+The locked surface is [`docs/API.md`](../docs/API.md). This section is the original sketch; where they differ, `docs/API.md` and the decision log win (D-015, D-016).
 
 ### 8.1 Tier 1 (covers most uses, no configuration)
 
@@ -302,22 +316,22 @@ Out of scope, named so nobody assumes otherwise: cross-site scripting defeats ev
 
 ```
 src/
-  lib.rs        crate docs, Tier-1 entry points, re-exports
-  csrf.rs       Csrf (immutable, cheap to share), builder, rotation
-  key.rs        Key, KeyId, KeyRing; per-key MAC state, wiped on drop
-  token.rs      raw token layout, MAC input, issue and verify core
-  mask.rs       pad generation and masking
-  b64.rs        base64url codec (no padding, fixed length, branch-free)
-  policy.rs     RequestFacts, layer-1 decision, modes
-  scope.rs      Scope
-  verdict.rs    Verdict, Reason, severity, Rejected
-  store.rs      one-time token seam (optional)
-  error.rs      construction errors (#[non_exhaustive])
+  lib.rs        crate docs, constants, re-exports
+  csrf.rs       Csrf (immutable, cheap to share), Builder, rotation, the three verbs at three tiers
+  key.rs        KeyId, the key ring, subkey derivation, wiping
+  token.rs      Token, raw layouts, MAC input encoding, issue and verify core
+  pad.rs        PadSource, OsPads (per-thread buffer, std)
+  b64.rs        base64url codec (constant time, canonical, fixed length)
+  binding.rs    Binding
+  policy.rs     RequestFacts, MethodClass, FetchSite, origin matching, Mode, OriginCheck
+  verdict.rs    Verdict, Verified, Rejected, Reason, severity
+  once.rs       NonceStore, StoreError, MemoryStore (std)
+  error.rs      Error (#[non_exhaustive])
 ```
 
 - `Csrf` is immutable after construction. Rotation builds a new value; the application swaps it. No interior mutability on any shared path.
-- Verify works on stack buffers only; the token length is fixed, so every buffer size is a constant.
-- `std` and `alloc` features add the `String`-returning conveniences and the thread-local pad source; the core works without them.
+- Verify works on stack buffers only; token lengths are fixed, so every buffer size is a constant.
+- The `std` feature adds the system clock, `OsPads`, `MemoryStore`, and the plain and `_with` calls; the `no_std` core has the `_at` calls.
 
 ---
 
@@ -383,13 +397,17 @@ Technical questions are decided at design lock (`0.2.0`) and recorded in the dec
 
 | Id | Question | Recommendation |
 |---|---|---|
-| O-1 | MAC input encoding: the plan concatenates session id and scope with no lengths, so (`"ab"`, `"c"`) and (`"a"`, `"bc"`) produce the same MAC input | length-prefix both; canonical encoding costs nothing |
-| O-2 | Where domain separation lives: a text prefix in every MAC input, or a per-key subkey derived once at construction | derive a subkey per key id; keeps short MAC inputs inside one BLAKE3 block |
-| O-3 | Time: read the clock inside the crate, or take `now` as a value on the Tier-3 path | Tier 3 takes `now`; Tier 1 reads the system clock; tests need no mock clock |
-| O-4 | One-time tokens: a stored random value (5.5), or a signed token carrying a nonce with the store holding outstanding nonces | signed token with a nonce: forged requests are refused before the store is touched, so they cannot burn a user's token or load the store |
-| O-5 | Reasons the plan does not name: a token issued in the future beyond skew; `PolicyOnly` without Fetch Metadata; a store that cannot answer | add `NotYetValid`, `Unverifiable`, `StoreUnavailable` (all fail closed) |
-| O-6 | Codec: lookup tables indexed by token bytes leak through the cache to a co-located attacker | constant-time arithmetic codec |
-| O-7 | Publish `0.1.0` to crates.io to claim the name? | yes |
+All seven questions from `0.1.0` are answered (D-008 to D-014). None is open.
+
+| Id | Question | Answer |
+|---|---|---|
+| O-1 | MAC input encoding | varint length prefixes (D-008) |
+| O-2 | Where domain separation lives | per-key, per-kind subkeys (D-009) |
+| O-3 | Time | Tier 3 takes `now`; Tier 1 and 2 read the system clock (D-010) |
+| O-4 | One-time tokens | signed token with a nonce; MAC before store (D-011) |
+| O-5 | Missing reasons | `NotYetValid`, `Unverifiable`, `AlreadyUsed`, `StoreUnavailable` (D-012) |
+| O-6 | Codec | constant-time arithmetic, canonical only (D-013) |
+| O-7 | Publish `0.1.0` | done, 2026-10-21 (D-014) |
 
 ---
 
@@ -400,6 +418,7 @@ Each idea is a hypothesis with a method and an expected cost, tried in the phase
 - **Session epoch binding.** Hypothesis: binding a session generation counter (bumped by the gates on password change or privilege change) into the MAC revokes every outstanding token for a session without changing the session id. Method: optional `epoch: u64` in the MAC input. Cost [est.]: 8 bytes of MAC input, ~0 ns.
 - **Custom-header fact.** Hypothesis: for JSON APIs, requiring a non-simple request header (which forces a CORS preflight) blocks cross-site form posts with no token at all, as a layer-1 fact for `PolicyOnly`. Method: `RequestFacts::custom_header(bool)`. Cost [est.]: ~1 ns.
 - **Audience binding.** Hypothesis: multi-tenant hosts sharing one key ring can bind the target origin into the MAC so a token rendered for tenant A never verifies on tenant B, even with a colliding session id. Method: an optional audience field in the MAC input. Cost [est.]: one extra BLAKE3 block only when the audience pushes the input past 64 bytes.
+- **Key-commitment check on rotation (0.2).** Hypothesis: a misdeployed cluster (two nodes holding different bytes under the same key id) fails silently as `BadMac` storms that look like an attack. Method: expose a short public fingerprint per key id (keyed BLAKE3 of a fixed label under the subkey, 8 bytes) so deployment tooling can compare rings across nodes without revealing keys. Cost [est.]: one BLAKE3 per key at construction; nothing per request.
 - **Forgery-rate feedback.** Hypothesis: `BadMac` rates per session are a strong signal of an active attack against that user. Method: document the event shape for sentinel-sec; no state in this crate. Cost: none here.
 
 ---
@@ -415,3 +434,22 @@ Each idea is a hypothesis with a method and an expected cost, tried in the phase
 | D-005 | 2026-10-21 | In-house base64url until `encode-lib` exists | a fixed-length codec is small, and no third-party dependency is taken for it |
 | D-006 | 2026-10-21 | No async runtime; approved exception to the REPS tokio clause | the crate does no I/O and never blocks; a runtime would be dead weight |
 | D-007 | 2026-10-21 | Name `csrf-sec`, home `sec-collection` | every security control in the stack is `-sec`; the crate is protocol-free like customs-sec |
+| D-008 | 2026-10-21 | MAC input length-prefixes the session id and the scope with LEB128 varints (O-1) | plain concatenation is ambiguous: (`"ab"`, `"c"`) and (`"a"`, `"bc"`) give the same input. Varints are canonical for any length, cost one byte for short values, and need no length limit or error path |
+| D-009 | 2026-10-21 | Domain separation by subkey: one subkey per key id and token kind, derived at construction as keyed BLAKE3(application key, label, key id); the application key is not kept (O-2) | separation in the key is stronger than a text prefix in the input; dropping the 11-byte prefix keeps a 43-character session id in one BLAKE3 block (derived: 8 + 43 = 51 bytes); one derivation per key, once |
+| D-010 | 2026-10-21 | Tier 3 takes `now` as unix seconds; Tier 1 and 2 read the system clock under `std`; no clock-lib dependency (O-3) | the `no_std` core has no clock; clock-lib's `Clock` trait needs `std`; explicit time makes every boundary test deterministic without a mock |
+| D-011 | 2026-10-21 | One-time tokens are signed tokens with a 128-bit nonce; the `NonceStore` (renamed from `TokenStore`) holds outstanding nonces and is consulted only after MAC, lifetime, and scope pass (O-4) | the stored-value design let a cross-site attacker submit a wrong token with the victim's cookies and burn the victim's one-time token, and sent every forged request to the shared store; checking the MAC first closes both |
+| D-012 | 2026-10-21 | Reasons added: `NotYetValid` (5), `Unverifiable` (5), `AlreadyUsed` (20), `StoreUnavailable` (5). `RetiredKey` is a pass flag, not a reason. `WrongScope` means "unscoped token on a scoped binding"; a different scope is `BadMac` (O-5) | every failure needs an accurate name; a scope inside the MAC cannot be recovered, so claiming `WrongScope` for it would let a forgery lower its own severity |
+| D-013 | 2026-10-21 | base64url codec in constant-time arithmetic (no lookup tables), canonical text only (O-6) | table lookups indexed by token bytes leak through the cache to a co-located attacker; non-canonical decoding would let a changed character still verify |
+| D-014 | 2026-10-21 | `0.1.0` published to claim the name (O-7) | the name is the public identity of the crate |
+| D-015 | 2026-10-21 | `issue` returns `Result<Token, Error>`; `Token` is an inline buffer, not a `String` | if the CSPRNG or the clock fails, no token is minted and nothing panics (fail closed); an inline token makes issue allocation-free and works without `std` |
+| D-016 | 2026-10-21 | A `Binding` value (session, scope, previous session, one-time store) replaces the `Scope` type and per-variant methods: three verbs (`issue`, `verify`, `check`) at three tiers (plain, `_with`, `_at`) | one small surface instead of a method for every combination; adding a binding field later is not a breaking change |
+| D-017 | 2026-10-21 | Key roles: signing, accepted (verify only, staged), retired (verify only until a time); at most 16 keys | clusters need the new key on every node before any node signs with it; single-node rotation keeps `rotated()` |
+| D-018 | 2026-10-21 | With no Fetch Metadata and no `Origin`, a present `Referer` whose origin does not match is refused (`OriginMismatch`), not handed to the token | a foreign `Referer` on an unsafe request is evidence of a cross-site form post; the OWASP CSRF guidance blocks it |
+| D-019 | 2026-10-21 | Unknown `Sec-Fetch-Site` values are treated as absent, never as same-origin | fail closed: the request falls through to the `Origin` and `Referer` checks and the token |
+| D-020 | 2026-10-21 | An empty session id cannot be bound: `issue` refuses (`EmptySession`), verify refuses (`Unverifiable`) | a token bound to nothing would be valid for every anonymous visitor, which is login CSRF (T2) |
+| D-021 | 2026-10-21 | `no_std` means `no_std` with `alloc` | crypt-io needs `alloc`; the verify path still allocates nothing, proven by test |
+| D-022 | 2026-10-21 | Origins compare scheme and host ASCII case-insensitively with default ports normalized; anything that is not a well-formed serialized origin never matches; user information in a `Referer` never matches | browsers serialize origins in lowercase without default ports, but adapters may not; a lenient parser is a bypass |
+| D-023 | 2026-10-21 | Validity window: expired when `now > issued_at + lifetime`, not yet valid when `issued_at > now + skew`; `issue` refuses clocks outside 2020 to 2156 | exact, testable boundaries; no token is minted with a meaningless time |
+| D-024 | 2026-10-21 | Keys whose 32 bytes are all equal are refused | catches an unset or zeroed key buffer, the most common key bug, at construction |
+| D-025 | 2026-10-21 | `FIELD_NAME` (`csrf_token`) and `HEADER_NAME` (`x-csrf-token`) constants | adapters, web-net, and form-net agree on names without a convention document |
+| D-026 | 2026-10-21 | `Token` has no `PartialEq`, and its `Debug` is redacted; `Csrf`'s `Debug` shows key ids and settings only | tokens are bearer values for a session: no variable-time comparison by accident, nothing secret in logs |

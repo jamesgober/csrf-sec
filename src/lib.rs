@@ -4,10 +4,11 @@
 //!
 //! ## Status
 //!
-//! Scaffold. The design is written down in `dev/PLAN.md` and the milestone
-//! schedule in `dev/ROADMAP.md` (both in the
-//! [repository](https://github.com/jamesgober/csrf-sec)); the public API
-//! begins with `0.2.0`.
+//! Design lock. The public API and the token format are written down in
+//! `docs/API.md`, the design and decisions in `dev/PLAN.md`, and the
+//! milestone schedule in `dev/ROADMAP.md` (all in the
+//! [repository](https://github.com/jamesgober/csrf-sec)); code lands from
+//! `0.3.0`.
 
 #![doc(html_root_url = "https://docs.rs/csrf-sec")]
 #![cfg_attr(docsrs, feature(doc_cfg))]
