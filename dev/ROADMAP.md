@@ -15,33 +15,37 @@ Exit: the full public API (types, signatures, errors, reasons, examples) written
 - [x] Tier 1, Tier 2, and Tier 3 signatures; `Binding`; `RequestFacts`; `Verdict`, `Reason`, `Rejected`; errors (D-015 to D-026).
 - [x] Feature flags (`std`, `alloc`) and what each adds.
 
-## v0.3.0 - Core
-Exit: tokens issue and verify end to end under a key ring with rotation; Tier 1 works; every verify-path reason has a test.
-- [ ] Constant-time base64url codec.
-- [ ] Key, key ids, key ring, subkey derivation, wiping.
-- [ ] Raw token, MAC, masking, issue and verify.
-- [ ] Lifetime and skew; retired keys; previous-session (`StaleSession`) check.
-- [ ] Tier 1 (`Csrf::new`, `issue`, `verify`).
+## v0.3.0 - Core (DONE, 2026-10-21)
+Exit: tokens issue and verify end to end under a key ring with rotation; `check` applies layer 1 and layer 2 per mode; every verify-path reason and every branch of the policy diagram has a test.
 
-## v0.4.0 - Policy layer and modes
-Exit: `check` applies layer 1 and layer 2 per mode; every branch of the policy diagram has a test.
-- [ ] `RequestFacts`, method classification, Fetch Metadata, `Origin`, `Referer` origin.
-- [ ] Allowlist, sibling subdomains, `Origin: null`.
-- [ ] `Strict`, `TokenOnly`, `PolicyOnly`.
-- [ ] Tier 2 builder.
+The policy layer, modes, and builder moved here from `0.4.0` (PLAN D-027).
+- [x] Constant-time base64url codec, canonical only.
+- [x] Key ids, key ring (signing, accepted, retired), subkey derivation, wiping, rotation and promotion.
+- [x] Raw token, MAC input encoding, masking, issue and verify; lifetime and skew; `StaleSession`; scopes and `WrongScope`.
+- [x] `RequestFacts`, method classification, Fetch Metadata, `Origin`, `Referer` origin, allowlist, sibling subdomains, `Origin: null`.
+- [x] `Strict`, `TokenOnly`, `PolicyOnly`.
+- [x] Tier 1, Tier 2 (`Binding`, builder), Tier 3 (`_at` calls, `PadSource`, `OsPads`).
+- [x] Zero-allocation test on issue, verify, check, and every rejection path.
+- [x] Independent reimplementation test of the token format.
+- [x] Examples (`basic`, `rotation`); `docs/API.md` compiled as a doctest.
+
+## v0.4.0 - One-time tokens
+Exit: a one-time token passes exactly once; forged one-time tokens never reach the store; a failing store fails closed.
+- [ ] Format version 2 (nonce), its own subkey label.
+- [ ] `NonceStore`, `StoreError`, `Binding::once`, `AlreadyUsed`, `StoreUnavailable`, `Error::Store`.
+- [ ] `MemoryStore`: sharded, bounded, expiring; concurrency tests.
 
 ## v0.5.0 - Feature complete
-Exit: every planned feature present and tested; the `no_std` core builds in CI.
-- [ ] Scopes and `WrongScope`.
-- [ ] One-time tokens and the `NonceStore` seam, with `MemoryStore`.
-- [ ] Tier 3 (`issue_at`, `verify_at`, `check_at`, `PadSource`).
-- [ ] `no_std` build check in CI.
+Exit: every planned feature present and tested; the `no_std` core builds for a bare-metal target in CI.
+- [ ] Bare-metal `no_std` build check in CI.
+- [ ] Ideas from `PLAN.md` section 15 tried: key fingerprints, the simple-content-type fact, session epoch binding; each adopted with tests or rejected with the reason recorded.
+- [ ] README in full form; examples for each tier, including `no_std`.
 
 ## v0.6.0 - Optimization
 Exit: measured numbers replace every estimate in the docs; at least 20% faster than the best competitor at equal or stronger security.
 - [ ] `criterion` benchmarks for issue, verify, policy, codec.
 - [ ] Competitor comparison harness (dev only, outside the published crate).
-- [ ] Allocation-counting test on the verify path.
+- [x] Allocation-counting test on the verify path (done in `0.3.0`).
 - [ ] Tuning pass with each change measured.
 
 ## v0.7.0 - Hardening

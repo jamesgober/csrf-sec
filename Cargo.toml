@@ -3,7 +3,7 @@
 # =============================================================================
 [package]
 name    = "csrf-sec"
-version = "0.2.0"
+version = "0.3.0"
 
 # Minimum Supported Rust Version (MSRV)
 rust-version = "1.85"
@@ -44,19 +44,41 @@ path = "src/lib.rs"
 # FEATURE FLAGS
 # #################################
 [features]
-default = []
+default = ["std"]
+
+# System clock, the OS-backed pad source, and the Tier 1 and Tier 2 calls.
+std = ["alloc", "crypt-io/std", "dep:mod-rand"]
+
+# `From<Token> for String`. The core always links `alloc` (crypt-io needs it);
+# this flag only gates conveniences that hand out owned strings.
+alloc = []
 
 
 # DEPENDENCIES
 # #################################
 [dependencies]
-# None yet. Planned dependencies and the reason for each are listed in
-# dev/PLAN.md; each is added with the first code that needs it.
+# Keyed BLAKE3, constant-time tag comparison, and Zeroizing. The accepted
+# audited-crypto exception (dev/PLAN.md, section 12).
+crypt-io = { version = "1.1", default-features = false, features = ["mac-blake3", "zeroize"] }
+
+# OS CSPRNG for token pads and nonces (first-party, zero dependencies).
+mod-rand = { version = "1", optional = true, default-features = false, features = ["tier3"] }
 
 
 # DEV DEPENDENCIES
 # #################################
 [dev-dependencies]
+
+
+# EXAMPLES
+# #################################
+[[example]]
+name = "basic"
+required-features = ["std"]
+
+[[example]]
+name = "rotation"
+required-features = ["std"]
 
 
 # RELEASE PROFILE
