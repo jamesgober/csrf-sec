@@ -13,6 +13,35 @@
 
 ---
 
+## [0.8.0] - 2026-10-21
+
+Alpha. The API is unchanged.
+
+### Added
+
+- `examples/server.rs`: a complete adapter with no dependencies, serving a
+  form, an "attacker" page on another origin, and logging every verdict.
+  Checked in a real browser: same-origin passes, cross-site and same-site
+  posts are refused.
+- `docs/API.md`: "Writing an adapter", with where each value comes from, a
+  checklist, and the cache and URL rules for pages that carry a token.
+- Mutation testing (cargo-mutants): `.cargo/mutants.toml` with the proven
+  equivalent mutants; CI runs the changed code of every pull request, and a
+  weekly workflow runs the full set. Every mutant is caught.
+- Tests from mutation testing: two invalid characters anywhere in a token are
+  refused, an even number of equal key deviations is not a weak key, a garbage
+  own origin cannot match through the `Referer` fast path, the 4 KiB header
+  limit boundary, the default lifetime's value, `accepts`, builder settings,
+  token views, the pad pool's threshold, and more.
+
+### Changed
+
+- The decoder accumulates one error flag per character, so a flag can never
+  be cancelled; its byte packing moved into small helpers. Same speed
+  (measured).
+
+---
+
 ## [0.7.0] - 2026-10-21
 
 Hardened. No change to the library's behaviour or API.
@@ -212,7 +241,8 @@ The scaffold and the plan. No functional code yet.
   keys and rotation, verdicts, threats T1-T15, architecture, ecosystem, open
   decisions, decision log), `dev/DIRECTIVES.md`, and `dev/ROADMAP.md`.
 
-[Unreleased]: https://github.com/jamesgober/csrf-sec/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/jamesgober/csrf-sec/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/jamesgober/csrf-sec/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/jamesgober/csrf-sec/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/jamesgober/csrf-sec/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/jamesgober/csrf-sec/compare/v0.4.0...v0.5.0

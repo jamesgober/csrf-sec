@@ -164,6 +164,64 @@ mod os {
         use super::{OsPads, POOL_LEN, Pool};
         use crate::PadSource;
 
+        fn pool_pos() -> usize {
+            super::POOL.with(|p| p.borrow().pos)
+        }
+
+        #[test]
+        fn test_os_pads_small_requests_come_from_the_pool() {
+            let mut pad = [0u8; 22];
+            OsPads.fill(&mut pad).unwrap();
+            let before = pool_pos();
+            assert!(before < POOL_LEN, "the first fill refilled the pool");
+            OsPads.fill(&mut pad).unwrap();
+            assert_eq!(pool_pos(), before + 22);
+            OsPads::refill().unwrap();
+            assert_eq!(pool_pos(), 0);
+        }
+
+        #[test]
+        fn test_pool_threshold_and_exact_fit() {
+            let mut pool = Pool::new();
+            let mut quarter = vec![0u8; POOL_LEN / 4];
+            pool.take(&mut quarter).unwrap();
+            assert_eq!(
+                pool.pos,
+                POOL_LEN / 4,
+                "a quarter of the pool comes from the pool"
+            );
+            let mut over = vec![0u8; POOL_LEN / 4 + 1];
+            pool.take(&mut over).unwrap();
+            assert_eq!(
+                pool.pos,
+                POOL_LEN / 4,
+                "more than a quarter reads the OS directly"
+            );
+            // Exactly the remaining bytes: taken without a refill.
+            pool.pos = POOL_LEN - 22;
+            let mut pad = [0u8; 22];
+            pool.take(&mut pad).unwrap();
+            assert_eq!(pool.pos, POOL_LEN);
+        }
+
+        #[test]
+        fn test_pad_source_through_a_mutable_reference() {
+            struct Ones;
+            impl PadSource for Ones {
+                fn fill(&mut self, out: &mut [u8]) -> Result<(), crate::Error> {
+                    out.fill(1);
+                    Ok(())
+                }
+            }
+            fn via<P: PadSource>(mut p: P) -> [u8; 4] {
+                let mut out = [0u8; 4];
+                p.fill(&mut out).unwrap();
+                out
+            }
+            let mut ones = Ones;
+            assert_eq!(via(&mut ones), [1; 4]);
+        }
+
         #[test]
         fn test_os_pads_fill_produces_distinct_pads() {
             let mut a = [0u8; 22];

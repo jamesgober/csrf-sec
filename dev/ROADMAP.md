@@ -60,8 +60,12 @@ Exit: an attack test for every threat T1-T15 that fails to get through; fuzz tar
 - [x] Fuzz targets with invariants: `verify`, `mutate`, `policy`, `once`; CI smoke run of 30 seconds each.
 - [x] Statistical timing test (dudect method) for the tag comparison and the codec, with a control; CI smoke run; 2,000,000-sample run at \|t\| < 4.5 passed locally.
 
-## v0.8.0 - Alpha
-- [ ] API review against real adapter use; docs complete; examples for each tier.
+## v0.8.0 - Alpha (DONE, 2026-10-21)
+Exit: the API holds up in a complete adapter and against real browsers; every mutant of the crate is caught.
+- [x] API review against a complete adapter (`examples/server.rs`): no public change needed (PLAN D-061).
+- [x] Real-browser check: same-origin passes, cross-site and same-site posts are refused, with the browser's own headers.
+- [x] Docs complete: the adapter guide in `docs/API.md` (values, checklist, caching, URLs); examples for each tier (`basic`, `rotation`, `tier3`, `server`).
+- [x] Mutation testing: every mutant caught; two real test gaps found and closed; CI on changed code, weekly full run (D-059, D-062).
 
 ## v0.9.0 - Beta / release candidate
 - [ ] Adversarial review with every finding fixed test-first; long constant-time run; API frozen candidate.

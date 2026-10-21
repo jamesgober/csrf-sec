@@ -68,6 +68,25 @@ const fn dec6(c: u8) -> i16 {
     ret
 }
 
+/// First byte of a decoded group from two 6-bit values (garbage when either
+/// is invalid; the caller's error flag decides). The parts never overlap.
+#[inline(always)]
+const fn byte0(c0: i16, c1: i16) -> u8 {
+    ((c0 << 2) | (c1 >> 4)) as u8
+}
+
+/// Second byte of a decoded group. The parts never overlap.
+#[inline(always)]
+const fn byte1(c1: i16, c2: i16) -> u8 {
+    ((c1 << 4) | (c2 >> 2)) as u8
+}
+
+/// Third byte of a decoded group. The parts never overlap.
+#[inline(always)]
+const fn byte2(c2: i16, c3: i16) -> u8 {
+    ((c2 << 6) | c3) as u8
+}
+
 /// Encode one block: 6 bytes to 8 characters.
 #[inline(always)]
 fn enc_block(s: &[u8], d: &mut [u8]) {
@@ -171,28 +190,35 @@ pub(crate) fn decode(src: &[u8], dst: &mut [u8]) -> bool {
     let mut dst_chunks = dst_blocks.into_remainder().chunks_exact_mut(3);
     for (s, d) in (&mut src_chunks).zip(&mut dst_chunks) {
         let (c0, c1, c2, c3) = (dec6(s[0]), dec6(s[1]), dec6(s[2]), dec6(s[3]));
-        err |= c0 | c1 | c2 | c3;
-        d[0] = ((c0 << 2) | (c1 >> 4)) as u8;
-        d[1] = ((c1 << 4) | (c2 >> 2)) as u8;
-        d[2] = ((c2 << 6) | c3) as u8;
+        // One flag per character: flags must accumulate, never cancel.
+        err |= c0;
+        err |= c1;
+        err |= c2;
+        err |= c3;
+        d[0] = byte0(c0, c1);
+        d[1] = byte1(c1, c2);
+        d[2] = byte2(c2, c3);
     }
     let rest = src_chunks.remainder();
     let out = dst_chunks.into_remainder();
     match (rest, out) {
         ([s0, s1], [d0]) => {
             let (c0, c1) = (dec6(*s0), dec6(*s1));
-            err |= c0 | c1;
+            err |= c0;
+            err |= c1;
             // The low four bits of the last character carry no data.
             err |= -(c1 & 0x0f);
-            *d0 = ((c0 << 2) | (c1 >> 4)) as u8;
+            *d0 = byte0(c0, c1);
         }
         ([s0, s1, s2], [d0, d1]) => {
             let (c0, c1, c2) = (dec6(*s0), dec6(*s1), dec6(*s2));
-            err |= c0 | c1 | c2;
+            err |= c0;
+            err |= c1;
+            err |= c2;
             // The low two bits of the last character carry no data.
             err |= -(c2 & 0x03);
-            *d0 = ((c0 << 2) | (c1 >> 4)) as u8;
-            *d1 = ((c1 << 4) | (c2 >> 2)) as u8;
+            *d0 = byte0(c0, c1);
+            *d1 = byte1(c1, c2);
         }
         ([], []) => {}
         // A remainder of one character cannot encode a byte.
@@ -382,6 +408,28 @@ mod tests {
                         !decode(&t, &mut dst),
                         "length {len} position {i} byte {bad:#04x}"
                     );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_decode_two_invalid_characters_anywhere_reject() {
+        // Error flags must accumulate, not cancel: two invalid characters in
+        // one group (found by mutation testing: `|` swapped for `^` in the
+        // tail accumulator let a pair of -1 flags cancel out).
+        for len in [44usize, 76] {
+            let mut text = vec![0u8; encoded_len(len)];
+            encode(&vec![0x5a; len], &mut text);
+            for i in 0..text.len() {
+                for j in i + 1..text.len() {
+                    for (a, b) in [(b'=', b'='), (0x80, 0xff), (b'+', b'/'), (0, b'.')] {
+                        let mut t = text.clone();
+                        t[i] = a;
+                        t[j] = b;
+                        let mut dst = vec![0u8; len];
+                        assert!(!decode(&t, &mut dst), "length {len} positions {i},{j}");
+                    }
                 }
             }
         }

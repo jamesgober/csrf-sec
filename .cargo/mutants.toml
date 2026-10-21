@@ -1,0 +1,23 @@
+# cargo-mutants configuration. Every mutant excluded here was shown to be
+# equivalent (it cannot change any observable behaviour) or unobservable from
+# safe code; dev/PLAN.md D-059 gives the argument for each. With these
+# excluded, any surviving mutant is a gap in the tests.
+exclude_re = [
+    # OR of bit fields that never overlap equals XOR of them.
+    # (`encode` has no other `|`.)
+    'replace \| with \^ in (ge|enc_block|dec_block|encode|byte0|byte1|byte2)$',
+    'replace \^= with \|= in memory::<impl Hasher for NonceHasher>::write$',
+    # `builder()` is `Builder::default()`.
+    'replace Csrf::builder -> Builder with Default::default\(\)$',
+    # An issued token is never empty, so `is_empty` is always false.
+    'replace Token::is_empty -> bool with false$',
+    # Without the length, the Referer fast path is skipped and the full
+    # comparison gives the same answer.
+    "replace OriginRef<'_>::len -> usize with 0$",
+    # The later all-digits test refuses the same inputs.
+    'replace \|\| with && in parse_port$',
+    # The pool was already advanced; the fallback reads the OS again.
+    'delete match arm Ok\(Ok\(result\)\) in os::<impl PadSource for OsPads>::fill$',
+    # Wiping the stack copy cannot be observed from safe code.
+    'replace wipe with \(\)$',
+]

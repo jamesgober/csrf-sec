@@ -16,7 +16,7 @@
 
 A task-oriented tour of the API, Tier 1 first. The rustdoc on [docs.rs](https://docs.rs/csrf-sec) is the item-by-item reference. Every `rust` example in this file is compiled and run as a doctest, so it matches the build; lines starting with `#` are setup hidden in rustdoc.
 
-> **Status: `0.7.0`.** Feature complete, measured, and hardened: every cost below is a measurement from [`PERFORMANCE.md`](./PERFORMANCE.md) (Linux, Ryzen 9 9950X3D) unless marked as an estimate.
+> **Status: `0.8.0`, alpha.** Feature complete, measured, hardened, and reviewed against a complete adapter and real browsers: every cost below is a measurement from [`PERFORMANCE.md`](./PERFORMANCE.md) (Linux, Ryzen 9 9950X3D) unless marked as an estimate.
 
 - [Setup](#setup)
 - [Tier 1: three calls](#tier-1-three-calls)
@@ -31,6 +31,7 @@ A task-oriented tour of the API, Tier 1 first. The rustdoc on [docs.rs](https://
 - [Tier 3: explicit time and randomness](#tier-3-explicit-time-and-randomness)
 - [Verdicts and reasons](#verdicts-and-reasons)
 - [Errors](#errors)
+- [Writing an adapter](#writing-an-adapter)
 - [Recipes](#recipes)
 - [Constants](#constants)
 - [Feature flags](#feature-flags)
@@ -41,7 +42,7 @@ A task-oriented tour of the API, Tier 1 first. The rustdoc on [docs.rs](https://
 
 ```toml
 [dependencies]
-csrf-sec = "0.7.0"
+csrf-sec = "0.8.0"
 ```
 
 `csrf-sec` has one job: decide whether a state-changing request came from your own page, for this session. It never parses HTTP. Your adapter (a framework middleware, web-net, a WASP service) hands it plain values: the session id, the submitted token, and the request's origin facts.
@@ -548,6 +549,60 @@ pub enum Error {
 assert_eq!(Csrf::new([0u8; 32]).unwrap_err(), Error::WeakKey(KeyId(0)));
 assert_eq!(Csrf::builder().build().unwrap_err(), Error::NoSigningKey);
 ```
+
+## Writing an adapter
+
+An adapter is the few lines that connect csrf-sec to your HTTP stack. `examples/server.rs` is a complete one with no dependencies: run it with `cargo run --example server`, open the page, submit the form, then try the "attacker" page on the second port and watch the refusals on the console.
+
+**Per request, hand over:**
+
+| Value | From | Notes |
+|---|---|---|
+| method | the request line | exactly as received; csrf-sec classifies it |
+| `Sec-Fetch-Site` | request header | raw value; absent means `""` |
+| `Origin` | request header | raw value; absent means `""` |
+| `Referer` | request header | raw value; only its origin is used |
+| own origin | your configuration | `https://example.com`; prefer configuration to rebuilding it from `Host`, which a proxy may rewrite |
+| session id | your session layer | the guest session before login, the user session after |
+| token | the `FIELD_NAME` form field, or the `HEADER_NAME` header for `fetch` | absent means `""` (refused as `missing`) |
+
+```rust
+# use csrf_sec::{Csrf, RequestFacts};
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
+# let csrf = Csrf::new(*b"an example key, 32 bytes long!!!")?;
+# let header = |name: &str| match name { "sec-fetch-site" => "same-origin", "origin" => "https://example.com", _ => "" };
+# let (method, session_id) = ("POST", "session-1");
+# let token = csrf.issue(session_id)?;
+# let form_field = token.as_str();
+let facts = RequestFacts::new(method)
+    .fetch_site(header("sec-fetch-site"))
+    .origin(header("origin"))
+    .referer(header("referer"))
+    .own_origin("https://example.com");
+
+match csrf.check(&facts, session_id, form_field) {
+    Ok(_) => { /* run the handler */ }
+    Err(refused) => {
+        // Log the reason and severity; send the client a plain 403.
+        eprintln!("csrf: {} (severity {})", refused.reason(), refused.severity());
+    }
+}
+# Ok(())
+# }
+```
+
+**Checklist:**
+
+- Call `check` on every route reachable by an unsafe method, including login and logout. Never let a `GET` change state: csrf-sec passes safe methods by design.
+- Issue a new token after login (the session id changes), and pass the old session id as `previous_session` for the short window your session layer keeps it.
+- Pages that carry a token must never be stored in a shared cache: send `Cache-Control: private, no-store` (or at least `private`). A cached page served to someone else hands them a token for the first user's session.
+- Never put a token in a URL. Query strings end up in logs, browser history, and `Referer` headers.
+- Refuse with a generic 403. Keep the reason in your logs (`reason().as_str()`, `severity()`), never in the response.
+- Give the session cookie `SameSite=Lax` (or `Strict`), `Secure`, `HttpOnly`, and the `__Host-` prefix.
+- Share one `Csrf` per process (`Arc<Csrf>`). On rotation, build the new value and swap it in; requests in flight keep the one they started with.
+- Load the key from persistent storage. In a cluster, stage a new key with `accept` on every node before any node signs with it, and compare `key_fingerprint` across nodes.
+
+**Real browsers.** The example was checked in a Chromium-based browser: a same-origin form post arrives with `Sec-Fetch-Site: same-origin` and passes on Fetch Metadata; the same post from another site (`127.0.0.1:7879` to `localhost:7878`) arrives with `Sec-Fetch-Site: cross-site` and is refused as `cross_site`; from a sibling origin on the same site (`localhost:7879`) it arrives with `same-site` and is refused unless `allow_same_site` is set.
 
 ## Recipes
 

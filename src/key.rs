@@ -354,6 +354,22 @@ mod tests {
         let mut k = [0u8; 32];
         k[0] = 1;
         assert!(!is_weak(&k));
+        // Deviations must accumulate, not cancel: two bytes differing from the
+        // first by the same amount still make a strong key.
+        let mut k = [0u8; 32];
+        k[3] = 1;
+        k[9] = 1;
+        assert!(!is_weak(&k));
+        let mut k = [7u8; 32];
+        k[1] = 6;
+        k[2] = 6;
+        assert!(!is_weak(&k));
+    }
+
+    #[test]
+    fn test_key_id_display_is_the_number() {
+        assert_eq!(KeyId(0).to_string(), "0");
+        assert_eq!(KeyId(255).to_string(), "255");
     }
 
     #[test]
