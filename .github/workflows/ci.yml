@@ -72,6 +72,48 @@ jobs:
       - name: Build (alloc)
         run: cargo build --no-default-features --features alloc --target thumbv7em-none-eabi
 
+  timing:
+    name: Timing (constant-time smoke test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # dudect-style Welch t-tests on the tag comparison and the codec, plus a
+      # control that must detect a real difference. Shared runners are noisy,
+      # so CI uses the "definite leak" threshold (|t| < 10); releases are
+      # checked locally at |t| < 4.5 with 2,000,000 samples per class.
+      - name: Timing tests
+        run: cargo test --release --test timing -- --ignored --nocapture --test-threads 1
+        env:
+          CSRF_TIMING_SAMPLES: "200000"
+          CSRF_TIMING_T: "10"
+
+  fuzz:
+    name: Fuzz (smoke)
+    runs-on: ubuntu-latest
+    env:
+      RUSTFLAGS: ""
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz
+      # The prebuilt cargo-fuzz binary is statically linked (musl) and would
+      # default to the musl target, which the sanitizer does not support.
+      - name: Build fuzz targets
+        run: cargo fuzz build -O --target x86_64-unknown-linux-gnu
+        working-directory: fuzz
+      - name: Run each target for 30 seconds
+        working-directory: fuzz
+        run: |
+          for target in verify mutate policy once; do
+            cargo fuzz run "$target" -O --target x86_64-unknown-linux-gnu -- -max_total_time=30
+          done
+
   security:
     name: Security (audit + deny)
     runs-on: ubuntu-latest

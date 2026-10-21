@@ -29,7 +29,7 @@
         <strong>MSRV is 1.85+</strong> (Rust 2024 edition). <code>#![forbid(unsafe_code)]</code>. <code>no_std</code> core (with <code>alloc</code>).
     </p>
     <blockquote>
-        <strong>Status: <code>0.6.0</code>, feature complete and measured.</strong> Session tokens, one-time tokens, the request origin policy, modes, the builder, key rotation and ring introspection, and all three API tiers are built, tested, and benchmarked; the core builds for bare-metal targets. The hardening phase (fuzzing, timing tests, an attack test per threat) is <code>0.7.0</code>. The schedule is <a href="./dev/ROADMAP.md"><code>dev/ROADMAP.md</code></a>.
+        <strong>Status: <code>0.7.0</code>, hardened.</strong> Every feature is built, measured, and attacked: an attack test for each of the fifteen threats, property tests, four invariant-checking fuzz targets, and statistical constant-time tests, all in CI. Next is the <code>0.8.0</code> alpha (API review against real adapters), then the <code>0.9</code> release candidates and <code>1.0</code>. The schedule is <a href="./dev/ROADMAP.md"><code>dev/ROADMAP.md</code></a>.
     </blockquote>
 </div>
 
@@ -40,7 +40,7 @@
 
 ```toml
 [dependencies]
-csrf-sec = "0.6.0"
+csrf-sec = "0.7.0"
 ```
 
 ## Quick Start
@@ -100,6 +100,7 @@ Measured, same machine and harness (`dev/bench-compare`). csrf-sec is also sessi
 - **Stateless by default.** Any node with the key ring verifies any session token; no shared store, no replication, no bottleneck. Only one-time tokens use a store.
 - **Constant time where it matters.** The tag comparison and the base64url codec (no lookup tables); canonical text only, so any changed character fails.
 - **Fail closed.** If the clock or the random generator fails, no token is issued; nothing panics.
+- **Attacked, not just tested.** Each of the fifteen threats in the plan has a test that plays the attacker; fuzz targets assert that nothing forged verifies and that a changed token never passes; Welch t-tests show the tag comparison and the decoder take the same time whatever the data.
 - **Ours.** No third-party runtime dependency of its own: keyed BLAKE3 through `crypt-io`, randomness through `mod-rand`. No async runtime.
 
 <br>

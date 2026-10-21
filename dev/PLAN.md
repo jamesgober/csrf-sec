@@ -4,7 +4,7 @@
 >
 > **Read order:** [`../REPS.md`](../REPS.md) &rarr; [`DIRECTIVES.md`](./DIRECTIVES.md) &rarr; **this file** &rarr; [`ROADMAP.md`](./ROADMAP.md).
 >
-> **Status:** `0.6.0`, feature complete and measured ([`../docs/PERFORMANCE.md`](../docs/PERFORMANCE.md)). Next: `0.7.0` hardening. The public surface is [`../docs/API.md`](../docs/API.md), compiled as a doctest.
+> **Status:** `0.7.0`, hardened: an attack test for every threat, property tests, four fuzz targets, and statistical timing tests, all in CI. Next: `0.8.0` alpha. The public surface is [`../docs/API.md`](../docs/API.md), compiled as a doctest; costs are in [`../docs/PERFORMANCE.md`](../docs/PERFORMANCE.md).
 
 ---
 
@@ -380,15 +380,19 @@ WASP's gates (session ids, the stale-session window, severity events), cookie-ne
 
 ## 13. Testing
 
-- Unit tests for every function and every `Ok` and `Err` path; names `test_<subject>_<condition>_<expected>`.
-- Property tests: issue-then-verify always passes; **any** single-bit change anywhere in a token is rejected; a token never verifies under another session id, scope, or key.
-- An attack test for each threat T1-T15 that must fail to get through.
-- Fuzz targets: decode, verify, and the policy check with arbitrary facts.
-- Timing check: a statistical constant-time test of the tag comparison and the codec (dudect method), run in CI as a smoke test and at length before 1.0.
-- Rotation tests: tokens signed by retired keys pass until retirement, then fail as `UnknownKey`.
-- Clock tests: expiry boundaries, skew tolerance, issue times in the future.
-- An allocation-counting test proves the verify path allocates nothing.
-- Cross-platform CI: Linux, macOS, Windows on stable and MSRV; a `no_std` build check.
+| Kind | Where | What it proves |
+|---|---|---|
+| unit | `src/*.rs` | every function and every `Ok` and `Err` path; names `test_<subject>_<condition>_<expected>` |
+| attack | `tests/attacks.rs` | one test per threat T1 to T15, playing the attacker; each must fail to get through |
+| exhaustive | `tests/tokens.rs`, `src/b64.rs` | every character of a token replaced with every byte value, every bit of the decoded token flipped; every byte value in every SWAR lane against the scalar code |
+| property | `tests/properties.rs` (proptest, 512 cases each) | issue-then-verify always passes; any character change fails; another session, scope, or key fails; arbitrary bytes never verify or panic; the policy is total and fails closed; the validity window is exact to the second |
+| format | `tests/tokens.rs`, `tests/once.rs` | both token formats rebuilt from their written description with crypt-io directly, byte for byte |
+| one-time | `tests/once.rs` | single use, a spy store proving forgeries and issuing never reach it, failing, full, and restarted stores, exactly one winner among eight concurrent verifies |
+| allocation | `tests/no_alloc.rs` | a counting global allocator: zero allocations on issue, verify, check, every rejection, and the one-time path, on Linux, macOS, and Windows |
+| timing | `tests/timing.rs` | dudect-style Welch t-tests: the tag comparison does not depend on where tags differ, decoding does not depend on the characters; a control proves the method detects a real difference |
+| fuzz | `fuzz/` (cargo-fuzz) | `verify` (nothing made by the fuzzer verifies), `mutate` (a changed token verifies only if its raw token is unchanged), `policy` (total; cross-site only through the allowlist; `null` never passes), `once` (single use against a model) |
+| no_std | CI | the core builds for `thumbv7em-none-eabi` |
+| platforms | CI | Linux, macOS, Windows on stable and 1.85; timing and fuzz smoke runs on Linux |
 
 ---
 
@@ -425,6 +429,7 @@ Outcomes so far: key fingerprints adopted (D-041); forgery-rate feedback adopted
 - **Key-commitment check on rotation (0.2).** Hypothesis: a misdeployed cluster (two nodes holding different bytes under the same key id) fails silently as `BadMac` storms that look like an attack. Method: expose a short public fingerprint per key id (keyed BLAKE3 of a fixed label under the subkey, 8 bytes) so deployment tooling can compare rings across nodes without revealing keys. Cost [est.]: one BLAKE3 per key at construction; nothing per request. **Outcome:** adopted as `KeyFingerprint` and `Csrf::keys()` (D-041).
 - **Simple-content-type fact (0.3).** Hypothesis: a cross-site form post needs no CORS preflight only when its content type is "simple" (`application/x-www-form-urlencoded`, `multipart/form-data`, `text/plain`). JSON APIs that refuse simple content types on unsafe requests close the no-preflight path even for browsers without Fetch Metadata, with no token at all. Method: `RequestFacts::content_type(value)` and a `PolicyOnly` rule that refuses simple types when `Sec-Fetch-Site` is absent. Cost [est.]: ~5 ns, a few byte comparisons. **Outcome:** rejected (D-042).
 - **Store-free single use for short windows (0.4).** Hypothesis: for one-time tokens with very short lifetimes (seconds), a per-node replay filter over recently consumed nonces (a rotating pair of fixed-size bit sets, cleared every lifetime) gives single use without a shared store when requests are pinned to one node. Method: a `NonceStore` implementation with a bounded false-positive rate (a false positive refuses a fresh token, fail closed). Cost [est.]: two bit-set probes per verify, fixed memory; no allocation after start. **Outcome:** rejected (D-046).
+- **Mutation testing (0.7).** Hypothesis: a test suite can pass while missing whole behaviours; mutating the code (flip a comparison, drop a check, return early) and requiring some test to fail for every mutant shows what the tests really pin down. Method: `cargo-mutants` over `token.rs`, `b64.rs`, `policy.rs`, `key.rs`, and `csrf.rs`, every surviving mutant either killed by a new test or recorded as equivalent. Cost: CI minutes only, run per release.
 - **Forgery-rate feedback.** Hypothesis: `BadMac` rates per session are a strong signal of an active attack against that user. Method: document the event shape for sentinel-sec; no state in this crate. Cost: none here. **Outcome:** adopted as documentation (D-047).
 
 ---
@@ -487,4 +492,7 @@ Outcomes so far: key fingerprints adopted (D-041); forgery-rate feedback adopted
 | D-053 | 2026-10-21 | With `Sec-Fetch-Site: same-site` or `cross-site`, only the allowlist can pass a request; the site's own origin no longer counts there | the browser has already said another site sent it, so the own origin cannot vouch for it; the attack path becomes the cheapest one (19 ns, and no parsing at all without an allowlist) |
 | D-054 | 2026-10-21 | Origin parsing splits the scheme at the first `:`, checks character classes with 128-bit sets, and passes a value byte-identical to a well-formed `own_origin` without a second parse | `Referer` match 51 to 23 ns; origins are public, so a bit-set lookup indexed by them leaks nothing |
 | D-055 | 2026-10-21 | Pads keep coming from the OS generator, even though a user-space generator seeded from it would cut `issue` by about 20 ns on Linux | the operating system's generator stays the only source of randomness in the crate; 28 ns is far inside the budget |
+| D-056 | 2026-10-21 | The timing test places both input classes in 64-byte-aligned buffers, crops each class's slowest 10 percent, and compares with Welch's t; CI fails above \|t\| = 10 with 200,000 samples per class, releases are checked at \|t\| < 4.5 with 2,000,000 | the first run read t = 60.7 on the tag comparison; with both inputs at the same cache-line offset it reads 0.6 to 2.3, so the difference was heap alignment (an 8-byte load straddling a line for one class), not the comparison; shared CI runners are too noisy for 4.5, and a control that must exceed 100 keeps the method honest |
+| D-057 | 2026-10-21 | Four fuzz targets with invariants, not only crash checks; CI builds them and runs each for 30 seconds on every push | a fuzzer that only looks for panics would miss a forgery; each target asserts the security property it exercises (60 seconds per target locally: about 17.5 million inputs, no finding) |
+| D-058 | 2026-10-21 | `proptest` 1.6 as a dev-dependency (as in clock-lib), alongside the existing exhaustive tests | exhaustive tests cover the fixed-size spaces (characters, bits, lanes); properties cover the unbounded ones (session ids, scopes, times) with shrinking |
 | D-038 | 2026-10-21 | The nonce is drawn from the same `PadSource` as the pad, before it | one randomness seam for Tier 3 and `no_std`; the order is part of the documented format so the independent reimplementation test can rebuild a token exactly |

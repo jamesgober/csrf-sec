@@ -1,0 +1,45 @@
+# Fuzz targets (cargo-fuzz, nightly). Development only: not part of the
+# published crate.
+[package]
+name = "csrf-sec-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+csrf-sec = { path = ".." }
+
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "verify"
+path = "fuzz_targets/verify.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "mutate"
+path = "fuzz_targets/mutate.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "policy"
+path = "fuzz_targets/policy.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "once"
+path = "fuzz_targets/once.rs"
+test = false
+doc = false
+bench = false
