@@ -41,7 +41,7 @@ Every number on this page is **measured** unless it says otherwise. Reproduce th
 | `RequestFacts` from raw headers | 2.9 ns | |
 | one-time `issue_at` | 198 ns | a 16-byte nonce from the pad source, a second compression block |
 | one-time `issue_at` + `verify_at`, allocation-free store | 429 ns | |
-| one-time `issue_at` + `verify_at`, `MemoryStore` | 557 ns | adds a shard lock and a hash map insert |
+| one-time `issue_at` + `verify_at`, `MemoryStore` | 574 ns | adds a shard lock and a hash map insert; steady state, every verify passing, expired records dropped as the session reaches its quota |
 | `OsPads`, 22 bytes | 28 ns | Linux `getrandom` throughput is the floor; about 8 ns on Windows |
 | `Csrf::new` | 212 ns | subkey derivation, once per process |
 

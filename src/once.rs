@@ -20,9 +20,10 @@ pub const NONCE_LEN: usize = 16;
 
 /// Why a [`NonceStore`] could not answer.
 ///
-/// On verify this becomes
-/// [`Reason::StoreUnavailable`](crate::Reason::StoreUnavailable): the request
-/// is refused.
+/// On verify, [`SessionLimit`](Self::SessionLimit) becomes
+/// [`Reason::TooManyUses`](crate::Reason::TooManyUses) and anything else
+/// [`Reason::StoreUnavailable`](crate::Reason::StoreUnavailable): either way
+/// the request is refused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum StoreError {
@@ -60,8 +61,9 @@ pub struct NonceUse<'a> {
     pub nonce: [u8; NONCE_LEN],
     /// When the token was issued.
     pub issued_at: u64,
-    /// Keep the record at least until this time: the token's lifetime plus
-    /// the configured skew, so a node whose clock lags still finds it.
+    /// Keep the record at least until this time: the token's one-time
+    /// lifetime plus the configured skew, so a node whose clock lags still
+    /// finds it. Nodes sharing a store must agree on the one-time lifetime.
     pub expires_at: u64,
     /// The verifying node's current time.
     pub now: u64,
@@ -115,7 +117,9 @@ impl fmt::Debug for NonceUse<'_> {
 ///   memory began): the request is refused as
 ///   [`AlreadyUsed`](crate::Reason::AlreadyUsed);
 /// - `Err(_)` when the store cannot answer: the request is refused as
-///   [`StoreUnavailable`](crate::Reason::StoreUnavailable).
+///   [`StoreUnavailable`](crate::Reason::StoreUnavailable), or as
+///   [`TooManyUses`](crate::Reason::TooManyUses) for
+///   [`StoreError::SessionLimit`].
 ///
 /// Two concurrent calls for one nonce must not both return `Ok(true)` (in a
 /// key-value store: set-if-absent with an expiry of `use_.expires_at`). The
@@ -165,6 +169,10 @@ mod memory {
     /// Default cap on records one session may hold at once.
     const DEFAULT_SESSION_LIMIT: u32 = 64;
 
+    /// A session may hold at most this fraction of its shard, so at least this
+    /// many sessions are needed to fill one.
+    const SESSIONS_PER_SHARD: usize = 8;
+
     /// How far ahead of the clock `MemoryStore::new` starts (the default skew):
     /// a clock that steps back by up to this much across a restart cannot let a
     /// used token pass again.
@@ -193,13 +201,16 @@ mod memory {
     }
 
     /// One shard: used nonces (with their expiry and session key), records per
-    /// session, and the earliest expiry, so a full shard with nothing expired
-    /// refuses without scanning.
+    /// session, the earliest expiry, so a full shard with nothing expired
+    /// refuses without scanning, and the latest expiry it has dropped.
     #[derive(Default)]
     struct Shard {
         records: HashMap<[u8; NONCE_LEN], (u64, u64), BuildHasherDefault<NonceHasher>>,
         per_session: HashMap<u64, u32>,
         earliest_expiry: u64,
+        /// Records expiring before this may have been dropped, so a use
+        /// expiring before it cannot be vouched for (0: nothing dropped).
+        forgotten_below: u64,
     }
 
     impl Shard {
@@ -210,11 +221,13 @@ mod memory {
             }
             let per_session = &mut self.per_session;
             let mut earliest = u64::MAX;
+            let mut forgotten = self.forgotten_below;
             self.records.retain(|_, &mut (expires_at, session)| {
                 if expires_at >= now {
                     earliest = earliest.min(expires_at);
                     true
                 } else {
+                    forgotten = forgotten.max(expires_at.saturating_add(1));
                     if let Some(count) = per_session.get_mut(&session) {
                         *count = count.saturating_sub(1);
                     }
@@ -223,6 +236,7 @@ mod memory {
             });
             per_session.retain(|_, count| *count > 0);
             self.earliest_expiry = earliest;
+            self.forgotten_below = forgotten;
         }
 
         /// Records `session` holds in this shard.
@@ -239,12 +253,19 @@ mod memory {
     /// shard, and each session may hold at most 64 records at once (change it
     /// with [`with_session_limit`](Self::with_session_limit)), so one session,
     /// even one an attacker controls, cannot fill the store for everyone else.
-    /// Each shard holds at most `capacity / 64` (rounded up) records. When a
-    /// shard or a session is full, expired records are dropped first; if none
-    /// has expired, the use is refused (fail closed) without scanning the
-    /// shard. Only submitted tokens take space: issuing never touches the
-    /// store, and records last the one-time lifetime plus skew (an hour and a
-    /// minute by default).
+    /// Each shard holds at most `capacity / 64` (rounded up) records, and a
+    /// session at most an eighth of a shard, whatever its limit, so filling a
+    /// shard always takes several sessions. When a shard or a session is full,
+    /// expired records are dropped first; if none has expired, the use is
+    /// refused (fail closed) without scanning the shard. Only submitted tokens
+    /// take space: issuing never touches the store, and records last the
+    /// one-time lifetime plus skew (an hour and a minute by default).
+    ///
+    /// A dropped record is remembered by its expiry: a later use that expires
+    /// no later than a record already dropped is refused as already used,
+    /// since the store can no longer vouch for it. With a clock that only
+    /// moves forward this never refuses a valid token; it stops a token used,
+    /// purged, and then presented again by a node whose clock stepped back.
     ///
     /// Memory lives in this process only. So that a restart cannot let a used
     /// token pass again, the store refuses (as already used) every token issued
@@ -285,11 +306,12 @@ mod memory {
         /// shard), starting one minute ahead of the system clock. If the clock
         /// reads before 2020, the store refuses every token (fail closed).
         ///
-        /// The capacity is split evenly over 64 shards, and all of one
-        /// session's records live in one shard, so a session can never hold
-        /// more than `capacity / 64` records whatever its limit: size the
-        /// store at 64 times the session limit or more (the default limit of
-        /// 64 wants at least 4,096).
+        /// The capacity is split evenly over 64 shards, all of one session's
+        /// records live in one shard, and a session may hold at most an eighth
+        /// of its shard: size the store at 512 times the session limit or
+        /// more (the default limit of 64 wants at least 32,768, about 2 MB),
+        /// or the limit is lowered to fit
+        /// ([`session_limit`](Self::session_limit) reports it).
         #[must_use]
         pub fn new(capacity: usize) -> Self {
             let now = std::time::SystemTime::now()
@@ -314,19 +336,29 @@ mod memory {
             Self {
                 shards,
                 shard_capacity: capacity.div_ceil(SHARDS).max(1),
-                session_limit: DEFAULT_SESSION_LIMIT,
+                session_limit: 0,
                 started_at,
                 sessions: RandomState::new(),
             }
+            .with_session_limit(DEFAULT_SESSION_LIMIT)
         }
 
-        /// The most records one session may hold at once (default 64; at
-        /// least 1). A session at its limit gets [`StoreError::SessionLimit`]
-        /// until some of its records expire.
+        /// The most records one session may hold at once (default 64). It is
+        /// kept between 1 and an eighth of a shard (`capacity / 512`), so one
+        /// session cannot fill its shard. A session at its limit gets
+        /// [`StoreError::SessionLimit`] until some of its records expire.
         #[must_use]
         pub fn with_session_limit(mut self, limit: u32) -> Self {
-            self.session_limit = limit.max(1);
+            let share = u32::try_from(self.shard_capacity / SESSIONS_PER_SHARD).unwrap_or(u32::MAX);
+            self.session_limit = limit.min(share).max(1);
             self
+        }
+
+        /// The most records one session may hold at once, after
+        /// [`with_session_limit`](Self::with_session_limit)'s bounds.
+        #[must_use]
+        pub fn session_limit(&self) -> u32 {
+            self.session_limit
         }
 
         /// Records held, including expired ones not yet dropped.
@@ -369,7 +401,8 @@ mod memory {
             }
             let session = self.sessions.hash_one(use_.session);
             let mut shard = lock(&self.shards[(session % SHARDS as u64) as usize]);
-            if shard.records.contains_key(&use_.nonce) {
+            if shard.records.contains_key(&use_.nonce) || use_.expires_at < shard.forgotten_below {
+                // Used, or possibly used and since dropped.
                 return Ok(false);
             }
             if shard.records.len() >= self.shard_capacity
@@ -407,7 +440,10 @@ mod memory {
 
     #[cfg(test)]
     mod tests {
-        use std::sync::{Arc, Barrier};
+        use std::{
+            hash::BuildHasher,
+            sync::{Arc, Barrier},
+        };
 
         use super::{MemoryStore, SHARDS};
         use crate::{NonceStore, NonceUse, StoreError};
@@ -427,6 +463,15 @@ mod memory {
                 expires_at,
                 now,
             }
+        }
+
+        /// A session other than `s` whose records share `s`'s shard.
+        fn neighbour_of_s(store: &MemoryStore) -> Vec<u8> {
+            let shard = |session: &[u8]| store.sessions.hash_one(session) % SHARDS as u64;
+            (0u32..)
+                .map(|i| format!("n{i}").into_bytes())
+                .find(|session| shard(session) == shard(b"s"))
+                .unwrap()
         }
 
         #[test]
@@ -456,7 +501,7 @@ mod memory {
 
         #[test]
         fn test_memory_store_consume_once() {
-            let s = MemoryStore::starting_at(64 * 10, 0);
+            let s = MemoryStore::starting_at(64 * 100, 0);
             assert!(s.is_empty());
             assert_eq!(s.consume(&use_(nonce(1), 5, 100, 10)), Ok(true));
             assert_eq!(s.consume(&use_(nonce(1), 5, 100, 11)), Ok(false));
@@ -477,20 +522,75 @@ mod memory {
         #[test]
         fn test_memory_store_full_shard_purges_then_refuses() {
             let s = MemoryStore::starting_at(SHARDS, 0); // one record per shard
-            let a = [7u8; 16];
-            let mut b = [9u8; 16];
-            b[15] = 7; // same shard as `a`
-            assert_eq!(s.consume(&use_(a, 1, 10, 5)), Ok(true));
-            assert_eq!(s.consume(&use_(b, 1, 20, 5)), Err(StoreError::Full));
-            // Once `a` expired, the shard makes room; `a` is forgotten, which
-            // is safe because the token itself has expired by then.
-            assert_eq!(s.consume(&use_(b, 1, 20, 11)), Ok(true));
+            let other = neighbour_of_s(&s);
+            let b_use = |now| NonceUse::new(&other, [9u8; 16], 1, 20, now);
+            assert_eq!(s.consume(&use_([7u8; 16], 1, 10, 5)), Ok(true));
+            assert_eq!(s.consume(&b_use(5)), Err(StoreError::Full));
+            // Once the first record expired, the shard makes room; it is
+            // forgotten, which is safe because its token has expired by then.
+            assert_eq!(s.consume(&b_use(11)), Ok(true));
             assert_eq!(s.len(), 1);
+        }
+
+        #[test]
+        fn test_session_limit_is_checked_before_shard_space() {
+            let s = MemoryStore::starting_at(SHARDS * 16, 0).with_session_limit(2);
+            assert_eq!(s.session_limit(), 2);
+            let other = neighbour_of_s(&s);
+            for i in 0..2 {
+                assert_eq!(s.consume(&use_(nonce(i), 1, 100, 5)), Ok(true));
+            }
+            assert_eq!(
+                s.consume(&use_(nonce(9), 1, 100, 5)),
+                Err(StoreError::SessionLimit)
+            );
+            // The neighbour still has room in the shared shard.
+            assert_eq!(
+                s.consume(&NonceUse::new(&other, nonce(10), 1, 100, 5)),
+                Ok(true)
+            );
+        }
+
+        #[test]
+        fn test_session_limit_bounds() {
+            // An eighth of a shard, rounded down, and never below one.
+            assert_eq!(MemoryStore::starting_at(SHARDS * 8, 0).session_limit(), 1);
+            assert_eq!(MemoryStore::starting_at(SHARDS * 16, 0).session_limit(), 2);
+            assert_eq!(MemoryStore::starting_at(SHARDS * 15, 0).session_limit(), 1);
+            assert_eq!(MemoryStore::starting_at(SHARDS * 7, 0).session_limit(), 1);
+            let big = MemoryStore::starting_at(SHARDS * 8 * 1000, 0);
+            assert_eq!(big.session_limit(), 64);
+            assert_eq!(big.with_session_limit(0).session_limit(), 1);
+            let big = MemoryStore::starting_at(SHARDS * 8 * 1000, 0);
+            assert_eq!(big.with_session_limit(999).session_limit(), 999);
+            let big = MemoryStore::starting_at(SHARDS * 8 * 1000, 0);
+            assert_eq!(big.with_session_limit(1001).session_limit(), 1000);
+        }
+
+        #[test]
+        fn test_dropped_records_are_remembered_by_expiry() {
+            let s = MemoryStore::starting_at(SHARDS * 100, 0);
+            assert_eq!(s.consume(&use_(nonce(1), 1, 30, 5)), Ok(true));
+            assert_eq!(s.consume(&use_(nonce(2), 1, 40, 5)), Ok(true));
+            // A purge at 35 drops the record expiring at 30, not the one at 40.
+            s.purge_expired(35);
+            assert_eq!(s.len(), 1);
+            assert_eq!(s.consume(&use_(nonce(1), 1, 30, 20)), Ok(false));
+            assert_eq!(s.consume(&use_(nonce(3), 1, 30, 20)), Ok(false));
+            assert_eq!(s.consume(&use_(nonce(4), 1, 31, 20)), Ok(true));
+            // A purge that drops nothing remembers nothing new.
+            s.purge_expired(31);
+            assert_eq!(s.consume(&use_(nonce(5), 1, 31, 20)), Ok(true));
+            // The mark only moves forward.
+            s.purge_expired(1_000);
+            s.purge_expired(35);
+            assert_eq!(s.consume(&use_(nonce(6), 1, 40, 20)), Ok(false));
         }
 
         #[test]
         fn test_session_limit_counts_survive_a_purge() {
             let s = MemoryStore::starting_at(64 * 100, 0).with_session_limit(3);
+            assert_eq!(s.session_limit(), 3);
             // Three records, two expiring at 10, one at 100.
             assert_eq!(s.consume(&use_(nonce(1), 1, 10, 5)), Ok(true));
             assert_eq!(s.consume(&use_(nonce(2), 1, 10, 5)), Ok(true));
@@ -527,7 +627,7 @@ mod memory {
 
         #[test]
         fn test_memory_store_purge_expired() {
-            let s = MemoryStore::starting_at(64 * 200, 0).with_session_limit(1000);
+            let s = MemoryStore::starting_at(64 * 8 * 100, 0).with_session_limit(100);
             for i in 0..100 {
                 assert_eq!(s.consume(&use_(nonce(i), 1, u64::from(i), 0)), Ok(true));
             }
@@ -541,7 +641,7 @@ mod memory {
 
         #[test]
         fn test_memory_store_concurrent_consume_exactly_one_wins() {
-            let s = Arc::new(MemoryStore::starting_at(64 * 100, 0));
+            let s = Arc::new(MemoryStore::starting_at(64 * 8 * 64, 0));
             for round in 0..50u32 {
                 let threads = 8;
                 let barrier = Arc::new(Barrier::new(threads));

@@ -1,5 +1,6 @@
-//! Findings of the `0.9.0` adversarial review, each pinned by a test that
-//! failed before its fix (dev/PLAN.md D-065 to D-074).
+//! Findings of the `0.9.0` adversarial reviews, each pinned by a test that
+//! failed before its fix (dev/PLAN.md D-065 to D-074 for the first review,
+//! D-075 to D-081 for the second, which reviewed the first's fixes).
 
 #![cfg(feature = "std")]
 
@@ -289,5 +290,157 @@ fn f10_rotation_keeps_the_last_second() {
             .unwrap_err()
             .reason(),
         Reason::UnknownKey
+    );
+}
+
+// ------------------------------------------------- second review (D-075 to D-081)
+
+/// Second review, finding 2: once a record is purged at time `P`, a verify
+/// whose clock reads earlier (a clock stepped back, or a request time older
+/// than the purger's) must not find the nonce unused.
+#[test]
+fn r2_purged_record_cannot_pass_again_on_an_earlier_clock() {
+    let c = csrf();
+    let store = MemoryStore::starting_at(1 << 16, NOW - 60);
+    let b = Binding::new("s").once(&store);
+    let t = c.issue_at(&b, NOW, &mut Pads(20)).unwrap();
+    assert!(c.verify_at(&b, t.as_bytes(), NOW + 3_000).is_ok());
+    // The clock ran ahead, a purge dropped the record, then the clock stepped back.
+    store.purge_expired(NOW + 3_661);
+    assert_eq!(
+        c.verify_at(&b, t.as_bytes(), NOW + 3_600)
+            .unwrap_err()
+            .reason(),
+        Reason::AlreadyUsed
+    );
+}
+
+/// Second review, finding 2, with no skew: a one-second race between the
+/// purger's clock and the verifier's.
+#[test]
+fn r2_purged_record_cannot_pass_again_with_zero_skew() {
+    let c = Csrf::builder()
+        .key(KeyId(1), KEY)
+        .skew(Duration::ZERO)
+        .build()
+        .unwrap();
+    let store = MemoryStore::starting_at(1 << 16, NOW - 60);
+    let b = Binding::new("s").once(&store);
+    let t = c.issue_at(&b, NOW, &mut Pads(21)).unwrap();
+    assert!(c.verify_at(&b, t.as_bytes(), NOW + 3_599).is_ok());
+    store.purge_expired(NOW + 3_601);
+    assert_eq!(
+        c.verify_at(&b, t.as_bytes(), NOW + 3_600)
+            .unwrap_err()
+            .reason(),
+        Reason::AlreadyUsed
+    );
+}
+
+/// Second review, finding 2: the record a purge forgets is exactly what it
+/// dropped. Tokens that expire after everything dropped still pass.
+#[test]
+fn r2_forgetting_refuses_nothing_newer_than_what_was_dropped() {
+    let store = MemoryStore::starting_at(1 << 16, 0);
+    let mut n = [0u8; 16];
+    let mut use_ = |i: u8, expires_at: u64, now: u64| {
+        n[0] = i;
+        store.consume(&NonceUse::new(b"s", n, 10, expires_at, now))
+    };
+    assert_eq!(use_(1, 100, 20), Ok(true));
+    store.purge_expired(150);
+    assert_eq!(
+        use_(2, 100, 20),
+        Ok(false),
+        "expired no later than a dropped record"
+    );
+    assert_eq!(
+        use_(3, 101, 20),
+        Ok(true),
+        "expires after every dropped record"
+    );
+}
+
+/// Second review, finding 3: an undersized store must not let one session
+/// take its whole shard. The session limit is capped at an eighth of a shard.
+#[test]
+fn r2_session_limit_is_capped_by_the_shard_size() {
+    let store = MemoryStore::starting_at(1_000, 0); // 16 records per shard
+    assert_eq!(store.session_limit(), 2);
+    assert_eq!(MemoryStore::starting_at(1 << 20, 0).session_limit(), 64);
+    assert_eq!(MemoryStore::starting_at(0, 0).session_limit(), 1);
+    assert_eq!(
+        MemoryStore::starting_at(1 << 20, 0)
+            .with_session_limit(500)
+            .session_limit(),
+        500
+    );
+    let c = csrf();
+    let store = MemoryStore::starting_at(1_000, NOW - 60);
+    let attacker = Binding::new("attacker").once(&store);
+    let mut pads = Pads(22);
+    let mut accepted = 0;
+    for _ in 0..50 {
+        let t = c.issue_at(&attacker, NOW, &mut pads).unwrap();
+        if c.verify_at(&attacker, t.as_bytes(), NOW).is_ok() {
+            accepted += 1;
+        }
+    }
+    assert_eq!(accepted, 2);
+    for i in 0..200 {
+        let session = format!("victim-{i}");
+        let victim = Binding::new(&session).once(&store);
+        let t = c.issue_at(&victim, NOW, &mut pads).unwrap();
+        assert!(
+            c.verify_at(&victim, t.as_bytes(), NOW).is_ok(),
+            "victim {i}"
+        );
+    }
+}
+
+/// Second review, finding 4: a session over its quota is reported apart from
+/// a store outage, so operators can tell abuse from failure.
+#[test]
+fn r2_session_over_its_quota_has_its_own_reason() {
+    let c = csrf();
+    let store = MemoryStore::starting_at(1 << 16, NOW - 60).with_session_limit(1);
+    let b = Binding::new("s").once(&store);
+    let t = c.issue_at(&b, NOW, &mut Pads(23)).unwrap();
+    assert!(c.verify_at(&b, t.as_bytes(), NOW).is_ok());
+    let t = c.issue_at(&b, NOW, &mut Pads(24)).unwrap();
+    let refused = c.verify_at(&b, t.as_bytes(), NOW).unwrap_err();
+    assert_eq!(refused.reason(), Reason::TooManyUses);
+    assert_eq!(refused.reason().as_str(), "too_many_uses");
+}
+
+/// Second review, finding 1: nodes sharing a store must agree on the one-time
+/// lifetime. During a rolling upgrade from 0.8 (whose one-time tokens lived
+/// the whole lifetime), new nodes set `once_lifetime(lifetime)`; then a token
+/// used on one node is refused on the other, even after a purge.
+#[test]
+fn r2_upgrade_path_keeps_one_time_tokens_single_use() {
+    let lifetime = Duration::from_secs(12 * 3_600);
+    // A 0.8 node: one-time tokens lived the whole (default) lifetime.
+    let old = Csrf::builder()
+        .key(KeyId(0), KEY)
+        .once_lifetime(lifetime)
+        .build()
+        .unwrap();
+    // A 0.9 node during the rollout, configured as the upgrade notes say.
+    let new = Csrf::builder()
+        .key(KeyId(0), KEY)
+        .once_lifetime(lifetime)
+        .build()
+        .unwrap();
+    let store = MemoryStore::starting_at(1 << 16, NOW - 60);
+    let b = Binding::new("s").once(&store);
+    let t = old.issue_at(&b, NOW, &mut Pads(25)).unwrap();
+    assert!(new.verify_at(&b, t.as_bytes(), NOW + 10).is_ok());
+    store.purge_expired(NOW + 4_000);
+    assert_eq!(
+        old.verify_at(&b, t.as_bytes(), NOW + 4_000)
+            .unwrap_err()
+            .reason(),
+        Reason::AlreadyUsed
     );
 }

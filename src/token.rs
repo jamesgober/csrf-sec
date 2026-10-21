@@ -285,7 +285,11 @@ fn tag_matches(
     scope: &[u8],
     received: &[u8],
 ) -> bool {
-    ct_eq16(&compute_tag(subkey, header, session, scope), received)
+    let mut expected = compute_tag(subkey, header, session, scope);
+    let matches = ct_eq16(&expected, received);
+    // A valid tag for this header and session: do not leave it behind.
+    wipe(&mut expected);
+    matches
 }
 
 /// Constant-time equality of a 16-byte tag with `received`.

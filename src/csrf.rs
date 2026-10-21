@@ -8,8 +8,8 @@ use crypt_io::Zeroizing;
 use crate::{
     binding::Binding,
     error::Error,
-    key::{KEY_LEN, KeyFingerprint, KeyId, KeyInfo, KeyRole, Ring, Slot},
-    once::{NONCE_LEN, NonceUse},
+    key::{KEY_LEN, KeyFingerprint, KeyId, KeyInfo, KeyRole, MAX_KEYS, Ring, Slot},
+    once::{NONCE_LEN, NonceUse, StoreError},
     pad::PadSource,
     policy::{Mode, Policy, RequestFacts},
     token::{self, ONCE, SESSION, Token, Window},
@@ -195,6 +195,7 @@ impl Csrf {
         match store.consume(&use_) {
             Ok(true) => Ok(opened.verified()),
             Ok(false) => Err(Rejected::new(Reason::AlreadyUsed)),
+            Err(StoreError::SessionLimit) => Err(Rejected::new(Reason::TooManyUses)),
             Err(_) => Err(Rejected::new(Reason::StoreUnavailable)),
         }
     }
@@ -264,7 +265,9 @@ impl Csrf {
     ///
     /// [`Error::Clock`] when `now` is outside 2020 to 2156 (a time in
     /// milliseconds, say), [`Error::WeakKey`], [`Error::DuplicateKeyId`] when
-    /// `id` is still in use by another key, [`Error::TooManyKeys`].
+    /// `id` is still in use by another key, [`Error::TooManyKeys`]. To rotate
+    /// away from a compromised key on a host whose clock is broken, build a
+    /// new `Csrf` with [`builder`](Self::builder) instead.
     pub fn rotated_at(&self, id: KeyId, key: [u8; KEY_LEN], now: u64) -> Result<Self, Error> {
         token::issued_at(now)?;
         let key = Zeroizing::new(key);
@@ -412,7 +415,10 @@ struct PendingKey {
 /// # }
 /// ```
 pub struct Builder {
+    /// Reserved for `MAX_KEYS` up front and never grown, so no reallocation
+    /// leaves a copy of a key in freed memory.
     keys: Vec<PendingKey>,
+    too_many_keys: bool,
     lifetime: Duration,
     once_lifetime: Option<Duration>,
     skew: Duration,
@@ -424,7 +430,8 @@ pub struct Builder {
 impl Default for Builder {
     fn default() -> Self {
         Self {
-            keys: Vec::new(),
+            keys: Vec::with_capacity(MAX_KEYS),
+            too_many_keys: false,
             lifetime: DEFAULT_LIFETIME,
             once_lifetime: None,
             skew: DEFAULT_SKEW,
@@ -437,11 +444,13 @@ impl Default for Builder {
 
 impl Builder {
     fn push(mut self, id: KeyId, role: KeyRole, key: [u8; KEY_LEN]) -> Self {
-        self.keys.push(PendingKey {
-            id,
-            role,
-            key: Zeroizing::new(key),
-        });
+        let key = Zeroizing::new(key);
+        if self.keys.len() == MAX_KEYS {
+            // Refused by `build`; the key is wiped here rather than stored.
+            self.too_many_keys = true;
+        } else {
+            self.keys.push(PendingKey { id, role, key });
+        }
         self
     }
 
@@ -481,6 +490,11 @@ impl Builder {
     /// hour, or the general lifetime if that is shorter; at most the general
     /// lifetime). The store keeps each used one-time token for this long plus
     /// the skew.
+    ///
+    /// Every node sharing a store must use the same value: the consuming
+    /// node sets the record's expiry, and a node with a longer setting would
+    /// accept the token again after that record expired. When upgrading a
+    /// cluster from 0.8, set this to the lifetime until the rollout ends.
     #[must_use]
     pub fn once_lifetime(mut self, lifetime: Duration) -> Self {
         self.once_lifetime = Some(lifetime);
@@ -560,11 +574,14 @@ impl Builder {
         {
             return Err(Error::InvalidRetireTime);
         }
-        let slots = self
-            .keys
-            .iter()
-            .map(|k| Slot::derive(k.id, k.role, &k.key))
-            .collect::<Result<Vec<_>, _>>()?;
+        if self.too_many_keys {
+            return Err(Error::TooManyKeys);
+        }
+        // Sized up front: a growing vector would leave subkeys in freed memory.
+        let mut slots = Vec::with_capacity(self.keys.len());
+        for k in &self.keys {
+            slots.push(Slot::derive(k.id, k.role, &k.key)?);
+        }
         Ok(Csrf {
             ring: Ring::new(slots)?,
             window: Window { lifetime, skew },
@@ -683,6 +700,34 @@ mod tests {
                 Error::InvalidRetireTime
             );
         }
+    }
+
+    #[test]
+    fn test_builder_never_grows_its_key_buffer() {
+        let key = |i: u8| {
+            let mut k = K1;
+            k[0] = i;
+            k
+        };
+        let mut b = Csrf::builder().key(KeyId(0), key(0));
+        let reserved = b.keys.capacity();
+        assert!(reserved >= crate::MAX_KEYS);
+        for i in 1..crate::MAX_KEYS as u8 {
+            b = b.accept(KeyId(i), key(i));
+        }
+        assert_eq!(b.keys.capacity(), reserved);
+        assert!(!b.too_many_keys);
+        let full = b.keys.len();
+        let b = b.accept(KeyId(99), key(99));
+        assert_eq!((b.keys.len(), b.keys.capacity()), (full, reserved));
+        assert!(b.too_many_keys);
+        assert_eq!(b.build().unwrap_err(), Error::TooManyKeys);
+        // Exactly MAX_KEYS keys build.
+        let mut b = Csrf::builder().key(KeyId(0), key(0));
+        for i in 1..crate::MAX_KEYS as u8 {
+            b = b.accept(KeyId(i), key(i));
+        }
+        assert_eq!(b.build().unwrap().keys().count(), crate::MAX_KEYS);
     }
 
     #[test]

@@ -233,11 +233,13 @@ fn test_store_failure_fails_closed() {
 fn test_full_store_refuses_rather_than_forgets() {
     let c = csrf();
     let store = MemoryStore::starting_at(0, NOW - 3600); // one record per shard
-    let b = Binding::new("s").once(&store);
     let mut pads = TestPads(8);
     let mut passed = 0;
     let mut refused = 0;
-    for _ in 0..1000 {
+    for i in 0..1000 {
+        // Many sessions: one session alone is stopped by its own quota first.
+        let session = format!("s{i}");
+        let b = Binding::new(&session).once(&store);
         let t = c.issue_at(&b, NOW, &mut pads).unwrap();
         match c.verify_at(&b, t.as_bytes(), NOW) {
             Ok(_) => passed += 1,

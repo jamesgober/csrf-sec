@@ -70,6 +70,7 @@ Exit: the API holds up in a complete adapter and against real browsers; every mu
 ## v0.9.0 - Release candidate (DONE, 2026-10-21)
 Exit: an independent adversarial review with every finding fixed test-first; the long constant-time run passes; the API is the 1.0 candidate.
 - [x] Adversarial review: no forgery found; medium (one session filling the one-time store) and low findings fixed test-first (`tests/review.rs`, PLAN D-065 to D-074).
+- [x] Second adversarial review of those fixes: no forgery; two one-time replay paths, a store sizing gap, and key-copy hygiene fixed test-first (PLAN D-075 to D-081).
 - [x] One-time lifetime, per-session store quota, fail-closed time ranges, rotation boundary, malformed own origin and `Referer`.
 - [x] Documentation corrected where the review found it overstated.
 - [x] Long constant-time run (2,000,000 samples per class, \|t\| < 4.5).
