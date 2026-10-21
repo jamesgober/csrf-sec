@@ -131,6 +131,10 @@ fn test_hot_paths_allocate_nothing() {
 
     let store = ArrayStore(Mutex::new([None; 8]));
     let once = Binding::new(session).scope("POST /pay").once(&store);
+    // Warm-up: on macOS a std Mutex allocates its pthread mutex on first lock.
+    let warm = csrf.issue_at(&once, NOW, &mut FixedPads).unwrap();
+    assert!(csrf.verify_at(&once, warm.as_bytes(), NOW).is_ok());
+    *store.0.lock().unwrap() = [None; 8];
     let n = allocations_during(|| {
         let t = csrf.issue_at(&once, NOW, &mut FixedPads).unwrap();
         assert!(csrf.verify_at(&once, t.as_bytes(), NOW).is_ok());
