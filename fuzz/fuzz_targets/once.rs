@@ -43,6 +43,7 @@ fuzz_target!(|data: &[u8]| {
                     Err(r) => match r.reason() {
                         Reason::AlreadyUsed => assert!(used.contains(&i), "token {i} refused as used"),
                         Reason::StoreUnavailable => {} // full store: fail closed
+                        Reason::TooManyUses => {}      // session quota: fail closed
                         other => panic!("unexpected reason {other:?}"),
                     },
                 }

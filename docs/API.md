@@ -16,7 +16,7 @@
 
 A task-oriented tour of the API, Tier 1 first. The rustdoc on [docs.rs](https://docs.rs/csrf-sec) is the item-by-item reference. Every `rust` example in this file is compiled and run as a doctest, so it matches the build; lines starting with `#` are setup hidden in rustdoc.
 
-> **Status: `0.8.0`, alpha.** Feature complete, measured, hardened, and reviewed against a complete adapter and real browsers: every cost below is a measurement from [`PERFORMANCE.md`](./PERFORMANCE.md) (Linux, Ryzen 9 9950X3D) unless marked as an estimate.
+> **Status: `0.9.0`, release candidate.** Feature complete, measured, hardened, reviewed against a complete adapter and real browsers, and through an independent adversarial review: every cost below is a measurement from [`PERFORMANCE.md`](./PERFORMANCE.md) (Linux, Ryzen 9 9950X3D) unless marked as an estimate.
 
 - [Setup](#setup)
 - [Tier 1: three calls](#tier-1-three-calls)
@@ -42,10 +42,12 @@ A task-oriented tour of the API, Tier 1 first. The rustdoc on [docs.rs](https://
 
 ```toml
 [dependencies]
-csrf-sec = "0.8.0"
+csrf-sec = "0.9.0"
 ```
 
-`csrf-sec` has one job: decide whether a state-changing request came from your own page, for this session. It never parses HTTP. Your adapter (a framework middleware, web-net, a WASP service) hands it plain values: the session id, the submitted token, and the request's origin facts.
+`csrf-sec` has one job: decide whether a state-changing request came from your own page, for this session.
+
+Examples here use readable literal keys such as `*b"an example key, 32 bytes long!!!"` for brevity. Those keys are public; a real key is 32 random bytes from a CSPRNG (or derived from a key-vault master), persisted. It never parses HTTP. Your adapter (a framework middleware, web-net, a WASP service) hands it plain values: the session id, the submitted token, and the request's origin facts.
 
 ## Tier 1: three calls
 
@@ -218,7 +220,7 @@ The adapter fills only what the request carried. Values are raw header bytes; no
  nothing at all                                -> the token decides (Strict), Unverifiable (PolicyOnly)
 ```
 
-Without Fetch Metadata, an origin is allowed when it equals `own_origin` or an origin added with `Builder::allow_origin`. With `Sec-Fetch-Site: same-site` or `cross-site`, only the allowlist counts: the browser has already said another site sent the request, so the site's own origin cannot vouch for it (and with no allowlist the refusal needs no parsing at all). Origins compare scheme and host ASCII case-insensitively, with default ports (`:80` for http and ws, `:443` for https and wss) normalized, anything that is not a well-formed serialized origin refused. A `Referer` with user information (`https://a@b/`) never matches. When nothing is configured to compare against (no `own_origin`, no allowlist), an `Origin` or `Referer` cannot be judged and the token decides, except that `null` and malformed values are still refused. Values longer than 4 KiB never match. Cost (measured): 1.3 ns on `Sec-Fetch-Site`, 23 ns on a `Referer` match, 37 ns on an `Origin` match, 19 ns for a cross-site refusal; no allocation.
+Without Fetch Metadata, an origin is allowed when it equals `own_origin` or an origin added with `Builder::allow_origin`. An `own_origin` that is given but malformed (a trailing slash, a missing scheme) matches nothing, so the request is refused rather than left to the token. With `Sec-Fetch-Site: same-site` or `cross-site`, only the allowlist counts: the browser has already said another site sent the request, so the site's own origin cannot vouch for it (and with no allowlist the refusal needs no parsing at all). Origins compare scheme and host ASCII case-insensitively, with default ports (`:80` for http and ws, `:443` for https and wss) normalized, anything that is not a well-formed serialized origin refused. A `Referer` with user information (`https://a@b/`) never matches. When nothing is configured to compare against (no `own_origin`, no allowlist), a well-formed `Origin` or `Referer` cannot be judged and the token decides; `null` and malformed values are still refused. Values longer than 4 KiB never match. Cost (measured): 1.3 ns on `Sec-Fetch-Site`, 23 ns on a `Referer` match, 37 ns on an `Origin` match, 19 ns for a cross-site refusal; no allocation.
 
 ```rust
 # use csrf_sec::{Csrf, OriginCheck, Reason, RequestFacts};
@@ -275,14 +277,16 @@ impl Csrf {
     pub fn key_fingerprint(&self, id: KeyId) -> Option<KeyFingerprint>;
     pub fn mode(&self) -> Mode;
     pub fn lifetime(&self) -> Duration;
+    pub fn once_lifetime(&self) -> Duration;
     pub fn skew(&self) -> Duration;
 }
 
 impl Builder {
     pub fn key(self, id: KeyId, key: [u8; 32]) -> Self;                     // signs and verifies
     pub fn accept(self, id: KeyId, key: [u8; 32]) -> Self;                  // verifies only
-    pub fn retired(self, id: KeyId, key: [u8; 32], retire_at: u64) -> Self; // verifies until retire_at (unix seconds)
+    pub fn retired(self, id: KeyId, key: [u8; 32], retire_at: u64) -> Self; // verifies while now < retire_at (unix seconds)
     pub fn lifetime(self, lifetime: Duration) -> Self;                      // default 12 hours
+    pub fn once_lifetime(self, lifetime: Duration) -> Self;                 // default 1 hour, at most the lifetime
     pub fn skew(self, skew: Duration) -> Self;                              // default 60 seconds
     pub fn mode(self, mode: Mode) -> Self;                                  // default Strict
     pub fn allow_origin(self, origin: &str) -> Self;
@@ -313,8 +317,8 @@ let csrf = Csrf::builder()
 ```
 
 - **Keys are 32 bytes and must be persisted** (or derived from a persisted master, for example a key-vault secret through HKDF). A key generated at boot makes every open form fail after a restart. Keys whose bytes are all equal (an unset buffer) are refused.
-- csrf-sec never MACs with your key directly: it derives one subkey per key id at construction, keeps only that, and wipes it when the `Csrf` is dropped. The key bytes handed to the builder are wiped when the builder is dropped.
-- **Rotation on one node:** `csrf.rotated(KeyId(4), new_key)?` returns a new `Csrf` that signs with key 4 and keeps the old signing key as retired until one token lifetime plus skew from now. Swap it in; nobody is logged out and no open form fails.
+- csrf-sec never MACs with your key directly: it derives one subkey per key id at construction, keeps only that, and wipes it when the `Csrf` is dropped. The key bytes handed to the builder are wiped when the builder is dropped, and the builder's key buffer is reserved for `MAX_KEYS` up front and never grows, so no reallocation leaves a heap copy behind. (Copies a move leaves on the stack, as with any Rust value, are out of reach of safe code.)
+- **Rotation on one node:** `csrf.rotated(KeyId(4), new_key)?` returns a new `Csrf` that signs with key 4 and keeps the old signing key as retired for one token lifetime plus skew from now, through the last second of the last token it could have signed. Swap it in; nobody is logged out and no open form fails. `rotated` reads the clock to set the retire time, and refuses with `Error::Clock` when the clock is outside 2020 to 2156; for an emergency rotation on a host whose clock is broken, build a new `Csrf` with the builder instead (`.key(new_id, new_key)`, leaving the compromised key out).
 - **Rotation across a cluster, in two steps:** first deploy the new key everywhere with `.accept(id, key)` (verify only); once every node has it, make it the signing key with `.key(id, key)` and move the old one to `.retired(..)`. A node never receives a token signed with a key it does not know. On a node built with the accepted key, `rotated(id, same_key)` promotes it.
 - Key ids are never reused while tokens signed under them can still be presented: the builder and `rotated` refuse an id still in use. Up to `MAX_KEYS` (16) keys at once.
 
@@ -387,26 +391,38 @@ pub struct NonceUse<'a> {
     pub session: &'a [u8],        // already proven by the MAC
     pub nonce: [u8; 16],          // random, generated at issue, never client-chosen
     pub issued_at: u64,           // unix seconds
-    pub expires_at: u64,          // keep the record until at least this time: lifetime plus skew
+    pub expires_at: u64,          // keep the record until at least this time: one-time lifetime plus skew
     pub now: u64,                 // the verifying node's time
 }
 
 #[non_exhaustive]
-pub enum StoreError { Unavailable, Full }
+pub enum StoreError { Unavailable, Full, SessionLimit }
+
+impl<'a> NonceUse<'a> {
+    pub const fn new(session: &'a [u8], nonce: [u8; 16], issued_at: u64, expires_at: u64, now: u64) -> Self;
+}
 
 pub struct MemoryStore { /* feature `std` */ }
 impl MemoryStore {
-    pub fn new(capacity: usize) -> Self;                       // starts now, by the system clock
+    pub fn new(capacity: usize) -> Self;                       // starts one minute ahead of the system clock
     pub fn starting_at(capacity: usize, started_at: u64) -> Self;
+    pub fn with_session_limit(self, limit: u32) -> Self;       // default 64, at most capacity / 512
+    pub fn session_limit(&self) -> u32;
     pub fn len(&self) -> usize;
     pub fn is_empty(&self) -> bool;
     pub fn purge_expired(&self, now: u64);
 }
 ```
 
-The store contract: `consume` **atomically** records the nonce and returns `Ok(true)` only for its first use. `Ok(false)` (already recorded, or the store cannot vouch that it was not) refuses the request as `AlreadyUsed`; `Err` refuses it as `StoreUnavailable`. Two concurrent calls for one nonce must not both return `Ok(true)`: in a key-value store, set-if-absent with an expiry of `expires_at`.
+One-time tokens have their own lifetime: one hour by default (`Builder::once_lifetime`, never longer than the general lifetime), so their records, and anything an abuser can do with them, last an hour and a minute rather than twelve hours.
 
-`MemoryStore` serves one node and tests: 64 shards, each behind its own short-held lock; at most `capacity / 64` (rounded up) records per shard; a full shard drops expired records and otherwise refuses (`StoreUnavailable`) rather than forgetting a used token. About 40 bytes per record [est.]; a one-time issue and verify through it takes 557 ns (measured). Its memory lives in this process only, so that a restart cannot let a used token pass again it refuses every token issued at or before the second it started: a page rendered in the store's first second must be reloaded. For a cluster, implement `NonceStore` over a store every node reaches (WASP: the gates' session store).
+**Nodes that share a store must use the same one-time lifetime.** The record's expiry is set by the node that consumed the token, from its own `once_lifetime`, and the token does not carry it. A node with a longer one-time lifetime would accept a token again after a shorter-lived node's record expired. Configure it once for the whole cluster, as you do the keys. To change it, switch every node at once, or accept that tokens used during the rollout may be presented once more to the nodes with the longer setting. **Upgrading a cluster from 0.8**, whose one-time tokens lived the whole lifetime: set `.once_lifetime(lifetime)` (12 hours by default) on the 0.9 nodes until no 0.8 node is left, then lower it everywhere at once.
+
+The store contract: `consume` **atomically** records the nonce and returns `Ok(true)` only for its first use. `Ok(false)` (already recorded, or the store cannot vouch that it was not) refuses the request as `AlreadyUsed`; `Err(StoreError::SessionLimit)` refuses it as `TooManyUses`, and any other `Err` as `StoreUnavailable`. Two concurrent calls for one nonce must not both return `Ok(true)`: in a key-value store, set-if-absent with an expiry of `expires_at`.
+
+`MemoryStore` serves one node and tests: 64 shards, each behind its own short-held lock, with all of one session's records in one shard. **Each session may hold at most 64 records at once** (`with_session_limit`), so one session, even an attacker's, cannot fill the store for everyone else; a session at its limit is refused (`TooManyUses`) until its records expire. Each shard holds at most `capacity / 64` (rounded up) records, and a session at most an eighth of a shard whatever its limit (`session_limit()` reports the limit in force), so filling a shard always takes at least eight sessions: **size the store at 512 times the session limit or more** (32,768 records, about 2 MB, for the default). When a shard or a session is full, expired records are dropped first; if none has expired, the use is refused (`StoreUnavailable`) at once, without scanning, rather than forgetting a used token. A dropped record is remembered by its expiry: a later use expiring no later than a dropped record is refused as `AlreadyUsed`, which never refuses a valid token on a clock that only moves forward, and stops a used token from passing again on a node whose clock stepped back after the purge. About 60 bytes per record [est.].
+
+The per-session limit raises the cost of filling the store; it does not remove it. Many sessions (guest sessions are cheap), each using its quota within the one-time lifetime, can still fill a store, after which one-time actions fail closed for everyone until records expire. The shard is chosen by a keyed hash, so an attacker cannot aim at one user's shard. Rate-limit the issuing of one-time tokens per client or account (a gate's job), and alert on `too_many_uses`. Its memory lives in this process only: so that a restart cannot let a used token pass again, it refuses every token issued at or before its start, and `MemoryStore::new` starts one minute ahead of the clock, which also covers a clock that steps back by up to a minute across the restart. A page rendered in the store's first minute must be reloaded. Where the clock can step back further, persist a high-water mark and use `starting_at`. For a cluster, implement `NonceStore` over a store every node reaches (WASP: the gates' session store).
 
 ```rust
 use std::{collections::HashSet, sync::Mutex};
@@ -502,8 +518,11 @@ impl Reason {
 | `Unverifiable` | `unverifiable` | the check cannot run: no session id, or no Fetch Metadata in `PolicyOnly` | 5 |
 | `AlreadyUsed` | `already_used` | a one-time token presented again (or the store cannot vouch it was not, as after a restart) | 20 |
 | `StoreUnavailable` | `store_unavailable` | the one-time store could not answer | 5 |
+| `TooManyUses` | `too_many_uses` | a session over its one-time store quota: typical of a script | 10 |
 
 The reason is decided **after** the MAC: a forged token is never reported as expired, and an expired real token is never reported as forged. Reasons are for logs and scoring (sentinel-sec, bouncer-io); clients get a generic refusal (HTTP 403). A token signed by a retired key passes, with `retired_key()` set.
+
+For detection layers: a forger controls the bytes before the MAC, so a forgery can choose to be reported as `malformed` (a wrong version byte or length), `unknown_key` (a key id the ring does not hold), or `missing`, all of low severity; only a forgery that reaches the MAC is `bad_mac`. Score the rate of non-benign refusals per session (everything except `expired`, `stale_session`, and `already_used` on a double submit), not only `bad_mac`.
 
 ```rust
 # use csrf_sec::{Csrf, Reason};
@@ -532,9 +551,10 @@ pub enum Error {
     NoSigningKey,            // builder without .key(..)
     MultipleSigningKeys,     // .key(..) given twice
     TooManyKeys,             // more than MAX_KEYS
-    InvalidLifetime,         // under 1 second, or over u32::MAX seconds
+    InvalidLifetime,         // under 1 second, over u32::MAX seconds, or a one-time lifetime over the lifetime
     InvalidSkew,             // longer than the lifetime
     InvalidOrigin,           // allow_origin value is not a serialized origin, or is "null"
+    InvalidRetireTime,       // a retire time past 2156 (milliseconds where seconds were meant)
     EmptySession,            // issue with an empty session id
     Clock,                   // clock outside 2020-01-01 .. 2156-02-07
     Random,                  // the CSPRNG failed; no token is issued
@@ -594,6 +614,8 @@ match csrf.check(&facts, session_id, form_field) {
 **Checklist:**
 
 - Call `check` on every route reachable by an unsafe method, including login and logout. Never let a `GET` change state: csrf-sec passes safe methods by design.
+- If your framework supports method overrides (`X-HTTP-Method-Override`, a `_method` field), pass the effective method after the override, and never allow an override that turns a safe method into an unsafe one: a `GET` overridden to `DELETE` would otherwise reach the handler as a request csrf-sec passed as safe.
+- Use `check`, not `policy`, as the gate: `policy` returns `Ok(NoFacts)` for a request that carried nothing to judge.
 - Issue a new token after login (the session id changes), and pass the old session id as `previous_session` for the short window your session layer keeps it.
 - Pages that carry a token must never be stored in a shared cache: send `Cache-Control: private, no-store` (or at least `private`). A cached page served to someone else hands them a token for the first user's session.
 - Never put a token in a URL. Query strings end up in logs, browser history, and `Referer` headers.
@@ -608,7 +630,7 @@ match csrf.check(&facts, session_id, form_field) {
 
 ### No server-side session
 
-An API or site without sessions can still bind tokens to the browser: set a random, `__Host-` prefixed cookie once (at least 128 bits from a CSPRNG), and use its value as the session id. This is the signed double-submit pattern, with the cookie value inside the MAC instead of compared to the token, so a planted or overwritten cookie only produces tokens that fail.
+An API or site without sessions can still bind tokens to the browser: set a random, `__Host-` prefixed cookie once (at least 128 bits from a CSPRNG), and use its value as the session id. This is the signed double-submit pattern, with the cookie value inside the MAC instead of compared to the token. The `__Host-` prefix is required, not optional: it is what stops a sibling subdomain from planting a cookie value of the attacker's choosing, for which the attacker could fetch a valid token. In `Strict` mode the request policy refuses the cross-site post as well; in `TokenOnly` mode the prefix is the only defence against a planted cookie.
 
 ```rust
 # use csrf_sec::{Csrf, OsPads, PadSource};
@@ -667,6 +689,7 @@ Log `reason().as_str()`, `severity()`, and `key_id()` on every refusal, never th
 | `HEADER_NAME` | `"x-csrf-token"` | suggested request header name |
 | `DEFAULT_LIFETIME` | 12 hours | token lifetime |
 | `DEFAULT_SKEW` | 60 seconds | tolerated clock difference between nodes |
+| `DEFAULT_ONCE_LIFETIME` | 1 hour | one-time token lifetime (or the lifetime, if shorter) |
 
 ## Feature flags
 
@@ -685,7 +708,7 @@ csrf-sec does not set cookies; cookie-net does. For the session cookie that toke
 - `SameSite=Lax` (or `Strict` where cross-site links into signed-in pages are not needed),
 - `Secure` and `HttpOnly`.
 
-Tokens are not compared to a cookie (they are not double-submit tokens), so cookie tossing from a subdomain cannot defeat them (T7).
+Tokens are not compared to a cookie, so a tossed cookie cannot make a token from one session pass in another. But if an attacker can plant the session cookie itself, they can plant a session they hold a token for; the `__Host-` prefix (which a subdomain cannot set) is the defence against that, and in `Strict` mode the request policy refuses the cross-site post too (T7).
 
 ## Token format
 

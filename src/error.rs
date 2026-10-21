@@ -46,6 +46,9 @@ pub enum Error {
     /// A token cannot be bound to an empty session id: it would be valid for
     /// every visitor. Bind to the guest session before login.
     EmptySession,
+    /// A retired key's retire time is past 2156, beyond any token's reach:
+    /// most likely a time in milliseconds where seconds were meant.
+    InvalidRetireTime,
     /// The clock reads outside 2020-01-01 to 2156-02-07, which a token cannot
     /// represent. Fix the system clock; no token was issued.
     Clock,
@@ -83,6 +86,9 @@ impl fmt::Display for Error {
                 "allowed origin must be a serialized origin such as https://example.com, not null",
             ),
             Self::EmptySession => f.write_str("cannot bind a token to an empty session id"),
+            Self::InvalidRetireTime => f.write_str(
+                "retire time is past 2156; give it in unix seconds, not milliseconds",
+            ),
             Self::Clock => {
                 f.write_str("system clock is outside 2020-01-01 to 2156-02-07; no token was issued")
             }
@@ -110,6 +116,7 @@ mod tests {
             Error::InvalidSkew,
             Error::InvalidOrigin,
             Error::EmptySession,
+            Error::InvalidRetireTime,
             Error::Clock,
             Error::Random,
         ];

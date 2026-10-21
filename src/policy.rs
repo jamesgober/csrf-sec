@@ -449,7 +449,8 @@ impl Policy {
 
     /// Whether `origin` (raw bytes and their parse) matches this site or an
     /// allowed origin. `None` when there is nothing to compare against (no own
-    /// origin, no allowlist).
+    /// origin given, no allowlist). An own origin that is given but malformed
+    /// counts as configured and matches nothing (fail closed).
     fn allows(
         &self,
         raw: &[u8],
@@ -460,10 +461,10 @@ impl Policy {
         if origin.is_some() && own == Some(raw) {
             return Some(true);
         }
-        let own = own.and_then(parse_origin);
         if own.is_none() && self.allowed.is_empty() {
             return None;
         }
+        let own = own.and_then(parse_origin);
         let Some(origin) = origin else {
             return Some(false);
         };
@@ -512,6 +513,9 @@ impl Policy {
                     match self.allows(raw, parsed, facts.own_origin) {
                         Some(true) => Ok(OriginCheck::Referer),
                         Some(false) => Err(Rejected::new(Reason::OriginMismatch)),
+                        // As for Origin: malformed values are refused even
+                        // with nothing configured to compare against.
+                        None if parsed.is_none() => Err(Rejected::new(Reason::OriginMismatch)),
                         None => Ok(OriginCheck::NoFacts),
                     }
                 } else {

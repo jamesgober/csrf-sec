@@ -1,7 +1,7 @@
 //! Hot-path benchmarks: issue, verify, check, the request policy, and
 //! one-time tokens. Run with `cargo bench --bench csrf`.
 
-use std::{hint::black_box, sync::Mutex};
+use std::{hint::black_box, sync::Mutex, time::Duration};
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use csrf_sec::{
@@ -213,14 +213,28 @@ fn one_time(c: &mut Criterion) {
             csrf.verify_at(&binding, black_box(t.as_bytes()), NOW)
         })
     });
+    // Steady state: one use a second, records that last a minute, so the
+    // session stays under its quota and expired records are dropped as it
+    // reaches it. Every verify must pass.
+    let short = Csrf::builder()
+        .key(KeyId(1), *b"benchmark key, thirty-two bytes!")
+        .once_lifetime(Duration::from_secs(50))
+        .skew(Duration::from_secs(10))
+        .build()
+        .unwrap();
+    // Criterion runs this closure more than once: the clock must not step
+    // back, and nonces must not repeat.
     let binding = Binding::new(SESSION).once(&memory);
+    let mut now = NOW;
+    let mut pads = FixedPads(13);
     group.bench_function("issue_at + verify_at (MemoryStore)", |b| {
-        let mut pads = FixedPads(13);
         b.iter(|| {
-            let t = csrf.issue_at(&binding, NOW, &mut pads).unwrap();
-            csrf.verify_at(&binding, black_box(t.as_bytes()), NOW)
+            now += 1;
+            let t = short.issue_at(&binding, now, &mut pads).unwrap();
+            short
+                .verify_at(&binding, black_box(t.as_bytes()), now)
+                .unwrap()
         });
-        memory.purge_expired(u64::MAX);
     });
     group.finish();
 }

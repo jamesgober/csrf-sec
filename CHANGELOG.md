@@ -13,6 +13,80 @@
 
 ---
 
+## [0.9.0] - 2026-10-21
+
+Release candidate. Two independent adversarial reviews, the second of the
+first one's fixes, found no way to forge a pass; every finding is fixed here,
+each with a test that failed first (`tests/review.rs`).
+
+### Upgrading from 0.8
+
+- Nodes that share a one-time store must use the same one-time lifetime. 0.8's
+  one-time tokens lived the whole lifetime and 0.9's default is one hour: set
+  `.once_lifetime(lifetime)` on 0.9 nodes until no 0.8 node is left, then
+  lower it everywhere at once.
+- An `own_origin` that does not parse (a trailing slash, a Unicode host)
+  refuses requests that carry `Origin` or `Referer` but no Fetch Metadata,
+  where 0.8 left them to the token. Pass the serialized origin
+  (`https://xn--bcher-kva.example`, no path).
+- With nothing configured, a `Referer` that is not a URL is refused.
+- `MemoryStore`: size it at 512 times the session limit (32,768 for the
+  default); smaller stores lower the limit to fit.
+
+### Security
+
+- `MemoryStore` limits each session to 64 records at once
+  (`with_session_limit`), so one session can no longer fill the one-time store
+  and refuse everyone else's one-time actions; a full shard with nothing
+  expired refuses at once instead of scanning under its lock.
+- A malformed `own_origin` (a trailing slash, say) refuses instead of turning
+  the `Origin` and `Referer` checks off.
+- A malformed or `null` `Referer` is refused even with nothing configured.
+- `MemoryStore::new` starts one minute ahead of the clock, so a clock that
+  steps back by up to a minute across a restart cannot let a used token pass
+  again; a clock before 2020 makes it refuse everything.
+- Times past the range a token can reach (milliseconds where seconds were
+  meant) fail closed: `Builder::retired` returns `Error::InvalidRetireTime`,
+  `rotated_at` returns `Error::Clock`, `purge_expired` does nothing.
+- `MemoryStore` remembers the latest expiry it has dropped, so a used token
+  cannot pass again on a node whose clock stepped back after a purge.
+- A session may hold at most an eighth of a `MemoryStore` shard whatever its
+  limit, so an undersized store cannot let one session fill a shard.
+- The builder's key buffer never reallocates (no copy of a key is left in
+  freed memory), and the expected tag is wiped after each comparison.
+
+### Added
+
+- `Builder::once_lifetime` and `Csrf::once_lifetime`: one-time tokens live one
+  hour by default (`DEFAULT_ONCE_LIFETIME`), never longer than the lifetime.
+- `MemoryStore::with_session_limit`, `MemoryStore::session_limit`,
+  `StoreError::SessionLimit`, `Error::InvalidRetireTime`, and `NonceUse::new`
+  (for testing custom stores).
+- `Reason::TooManyUses` (`too_many_uses`, severity 10): a session over its
+  one-time store quota, reported apart from `StoreUnavailable`.
+
+### Changed
+
+- Rotation keeps the old key one second longer, through the last valid second
+  of a token a peer up to the skew ahead could have signed.
+- `MemoryStore` keeps each session's records in one shard; size it at 512
+  times the session limit or more.
+- The subkey comparison used for promotion no longer copies key material, and
+  the unsent half of each MAC output is wiped.
+
+### Fixed
+
+- Documentation: a planted session cookie is stopped by the `__Host-` prefix
+  and the request policy, not by the MAC; adapters must pass the effective
+  method after overrides; `policy()` returning `Ok(NoFacts)` is not a pass;
+  detection layers should score every non-benign reason, since a forger can
+  choose `malformed` or `unknown_key`; example keys are public placeholders.
+- Documentation: `rotated` refuses on a broken clock (build a new `Csrf` for an
+  emergency rotation); many sessions can still fill a one-time store, so
+  rate-limit one-time issuing.
+
+---
+
 ## [0.8.0] - 2026-10-21
 
 Alpha. The API is unchanged.
@@ -241,7 +315,8 @@ The scaffold and the plan. No functional code yet.
   keys and rotation, verdicts, threats T1-T15, architecture, ecosystem, open
   decisions, decision log), `dev/DIRECTIVES.md`, and `dev/ROADMAP.md`.
 
-[Unreleased]: https://github.com/jamesgober/csrf-sec/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/jamesgober/csrf-sec/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/jamesgober/csrf-sec/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/jamesgober/csrf-sec/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/jamesgober/csrf-sec/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/jamesgober/csrf-sec/compare/v0.5.0...v0.6.0

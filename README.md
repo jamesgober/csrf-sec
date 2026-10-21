@@ -29,7 +29,7 @@
         <strong>MSRV is 1.85+</strong> (Rust 2024 edition). <code>#![forbid(unsafe_code)]</code>. <code>no_std</code> core (with <code>alloc</code>).
     </p>
     <blockquote>
-        <strong>Status: <code>0.8.0</code>, alpha.</strong> Every feature is built, measured, attacked, and checked against real browsers; every mutant of the crate is caught by a test. Next are the <code>0.9</code> release candidates (adversarial review, long constant-time runs), then <code>1.0</code>. The schedule is <a href="./dev/ROADMAP.md"><code>dev/ROADMAP.md</code></a>.
+        <strong>Status: <code>0.9.0</code>, release candidate.</strong> Every feature is built, measured, attacked, checked against real browsers, and caught by mutation testing; two independent adversarial reviews found no way to forge a pass, and every other finding is fixed. Next is <code>1.0</code>, after the full audit. The schedule is <a href="./dev/ROADMAP.md"><code>dev/ROADMAP.md</code></a>.
     </blockquote>
 </div>
 
@@ -40,7 +40,7 @@
 
 ```toml
 [dependencies]
-csrf-sec = "0.8.0"
+csrf-sec = "0.9.0"
 ```
 
 ## Quick Start
@@ -76,7 +76,7 @@ A refusal carries a reason (`bad_mac`, `cross_site`, `expired`, ...) and a sever
 | **Request origin policy.** `Sec-Fetch-Site: cross-site` on an unsafe request is refused unless its origin is allowlisted; without Fetch Metadata, `Origin` (then `Referer`) must match this site. Script cannot forge these headers. | cross-site form posts, `Origin: null` tricks, top-level cross-site POST navigation | 1.3 ns on Fetch Metadata, 19 to 37 ns on `Origin` and `Referer` |
 | **Signed, session-bound token.** Keyed BLAKE3 over the session id (and optionally one action), 128-bit tag, compared in constant time; the session id never appears in the token. | forged and replayed-across-session tokens, tokens taken from another form | verify 110 ns, issue 112 ns |
 | **Per-response masking.** Every page shows different token text (fresh CSPRNG pad), all of it valid. | BREACH-style recovery from compressed pages | 28 ns per pad on Linux, 8 ns on Windows |
-| **Cookie guidance.** `__Host-` prefix, `SameSite=Lax`, `Secure`, `HttpOnly` on the session cookie, applied by your cookie layer. Tokens are never compared to a cookie. | cookie tossing from a subdomain | none |
+| **Cookie guidance.** `__Host-` prefix, `SameSite=Lax`, `Secure`, `HttpOnly` on the session cookie, applied by your cookie layer. Tokens are never compared to a cookie. | a sibling subdomain planting a session cookie (the prefix, not the MAC, stops this) | none |
 
 Measured on Linux (Ryzen 9 9950X3D); method and every number in [`docs/PERFORMANCE.md`](./docs/PERFORMANCE.md). Zero allocation on issue, verify, check, and every rejection path, asserted by a counting-allocator test on Linux, macOS, and Windows.
 
@@ -95,7 +95,7 @@ Measured, same machine and harness (`dev/bench-compare`). csrf-sec is also sessi
 
 - **Three API tiers.** Tier 1: `Csrf::new`, `issue`, `verify`, `check`. Tier 2: a `Binding` (scope, previous session) and a builder. Tier 3: explicit time and randomness, no `std` required.
 - **Accurate reasons.** The MAC is checked first, so a forged token is never reported as expired, and an expired real token is never reported as forged. A tab opened before login reports `stale_session` (benign), not `bad_mac` (forgery).
-- **One-time tokens** for high-value actions, through a `NonceStore` you choose. Issuing never touches the store, which records only used tokens; the MAC is checked first, so a forged request can neither burn a user's token nor load a shared store.
+- **One-time tokens** for high-value actions, through a `NonceStore` you choose. Issuing never touches the store, which records only used tokens; the MAC is checked first, so a forged request can neither burn a user's token nor load a shared store, and the in-memory store gives each session its own quota, so no one session can fill it for everyone else.
 - **Rotation that logs nobody out.** Signing, accepted (staged), and retired keys; two-step rotation for clusters, so no node ever sees a token from a key it does not know; public key fingerprints to confirm every node holds the same ring.
 - **Stateless by default.** Any node with the key ring verifies any session token; no shared store, no replication, no bottleneck. Only one-time tokens use a store.
 - **Constant time where it matters.** The tag comparison and the base64url codec (no lookup tables); canonical text only, so any changed character fails.

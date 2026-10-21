@@ -61,6 +61,9 @@ pub enum Reason {
     AlreadyUsed,
     /// The one-time token store could not answer.
     StoreUnavailable,
+    /// This session already holds as many one-time records as the store
+    /// allows one session: unusual for a person, typical of a script.
+    TooManyUses,
 }
 
 impl Reason {
@@ -72,7 +75,7 @@ impl Reason {
     /// | `BadMac` | 40 |
     /// | `CrossSite`, `OriginMismatch` | 30 |
     /// | `WrongScope`, `AlreadyUsed` | 20 |
-    /// | `Malformed` | 10 |
+    /// | `Malformed`, `TooManyUses` | 10 |
     /// | `Missing`, `UnknownKey`, `NotYetValid`, `Unverifiable`, `StoreUnavailable` | 5 |
     /// | `StaleSession`, `Expired` | 1 |
     #[must_use]
@@ -81,7 +84,7 @@ impl Reason {
             Self::BadMac => 40,
             Self::CrossSite | Self::OriginMismatch => 30,
             Self::WrongScope | Self::AlreadyUsed => 20,
-            Self::Malformed => 10,
+            Self::Malformed | Self::TooManyUses => 10,
             Self::Missing
             | Self::UnknownKey
             | Self::NotYetValid
@@ -108,6 +111,7 @@ impl Reason {
             Self::Unverifiable => "unverifiable",
             Self::AlreadyUsed => "already_used",
             Self::StoreUnavailable => "store_unavailable",
+            Self::TooManyUses => "too_many_uses",
         }
     }
 }
@@ -271,7 +275,7 @@ mod tests {
     use super::{OriginCheck, Reason, Rejected, Verified};
     use crate::KeyId;
 
-    const ALL: [Reason; 13] = [
+    const ALL: [Reason; 14] = [
         Reason::Missing,
         Reason::Malformed,
         Reason::UnknownKey,
@@ -285,11 +289,12 @@ mod tests {
         Reason::Unverifiable,
         Reason::AlreadyUsed,
         Reason::StoreUnavailable,
+        Reason::TooManyUses,
     ];
 
     #[test]
     fn test_reason_severity_matches_plan_table() {
-        let expected = [5, 10, 5, 40, 1, 1, 5, 20, 30, 30, 5, 20, 5];
+        let expected = [5, 10, 5, 40, 1, 1, 5, 20, 30, 30, 5, 20, 5, 10];
         for (r, s) in ALL.iter().zip(expected) {
             assert_eq!(r.severity(), s, "{r:?}");
         }

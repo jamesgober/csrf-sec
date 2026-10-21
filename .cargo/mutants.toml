@@ -20,4 +20,8 @@ exclude_re = [
     'delete match arm Ok\(Ok\(result\)\) in os::<impl PadSource for OsPads>::fill$',
     # Wiping the stack copy cannot be observed from safe code.
     'replace wipe with \(\)$',
+    # Only skips a scan when nothing can have expired; the scan gives the same
+    # result. And keeping zero-count entries only costs memory.
+    'replace \|\| with && in memory::Shard::purge$',
+    'replace > with >= in memory::Shard::purge$',
 ]

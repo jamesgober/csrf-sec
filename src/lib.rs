@@ -77,10 +77,12 @@
 //!
 //! ## Cookie guidance
 //!
-//! Give the session cookie the `__Host-` prefix (so a sibling subdomain cannot
-//! plant or overwrite it), `SameSite=Lax` (or `Strict`), `Secure`, and
-//! `HttpOnly`. Tokens are not compared to a cookie, so cookie tossing cannot
-//! defeat them.
+//! Give the session cookie the `__Host-` prefix, `SameSite=Lax` (or
+//! `Strict`), `Secure`, and `HttpOnly`. The prefix is what stops a sibling
+//! subdomain from planting a cookie: an attacker who could plant a session id
+//! of their own could also fetch a valid token for it, and the MAC alone
+//! cannot tell. In `Strict` mode the request policy refuses that cross-site
+//! post as well.
 
 #![doc(html_root_url = "https://docs.rs/csrf-sec")]
 #![cfg_attr(docsrs, feature(doc_cfg))]
@@ -103,7 +105,7 @@ mod verdict;
 
 pub use crate::{
     binding::Binding,
-    csrf::{Builder, Csrf, DEFAULT_LIFETIME, DEFAULT_SKEW},
+    csrf::{Builder, Csrf, DEFAULT_LIFETIME, DEFAULT_ONCE_LIFETIME, DEFAULT_SKEW},
     error::Error,
     key::{KEY_LEN, KeyFingerprint, KeyId, KeyInfo, KeyRole, MAX_KEYS},
     once::{NONCE_LEN, NonceStore, NonceUse, ONCE_TOKEN_LEN, StoreError},

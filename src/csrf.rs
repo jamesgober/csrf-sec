@@ -8,8 +8,8 @@ use crypt_io::Zeroizing;
 use crate::{
     binding::Binding,
     error::Error,
-    key::{KEY_LEN, KeyFingerprint, KeyId, KeyInfo, KeyRole, Ring, Slot},
-    once::{NONCE_LEN, NonceUse},
+    key::{KEY_LEN, KeyFingerprint, KeyId, KeyInfo, KeyRole, MAX_KEYS, Ring, Slot},
+    once::{NONCE_LEN, NonceUse, StoreError},
     pad::PadSource,
     policy::{Mode, Policy, RequestFacts},
     token::{self, ONCE, SESSION, Token, Window},
@@ -21,6 +21,11 @@ pub const DEFAULT_LIFETIME: Duration = Duration::from_secs(12 * 3600);
 
 /// Default tolerated clock difference between nodes: 60 seconds.
 pub const DEFAULT_SKEW: Duration = Duration::from_secs(60);
+
+/// Default lifetime of one-time tokens: 1 hour (never longer than the general
+/// lifetime). One-time tokens protect single actions such as a payment, so a
+/// short life keeps their store records, and any abuse of the store, short.
+pub const DEFAULT_ONCE_LIFETIME: Duration = Duration::from_secs(3600);
 
 /// Issues and verifies anti-forgery tokens, and applies the request origin
 /// policy.
@@ -56,6 +61,7 @@ pub const DEFAULT_SKEW: Duration = Duration::from_secs(60);
 pub struct Csrf {
     ring: Ring,
     window: Window,
+    once_window: Window,
     mode: Mode,
     policy: Policy,
 }
@@ -128,6 +134,12 @@ impl Csrf {
         Duration::from_secs(u64::from(self.window.skew))
     }
 
+    /// The lifetime of one-time tokens.
+    #[must_use]
+    pub fn once_lifetime(&self) -> Duration {
+        Duration::from_secs(u64::from(self.once_window.lifetime))
+    }
+
     // ---------------------------------------------------------------- Tier 3
 
     /// Issue a token for `binding` at `now` (unix seconds), masked with bytes
@@ -169,25 +181,32 @@ impl Csrf {
         let Some(store) = binding.store else {
             return token::verify_session(&self.ring, self.window, binding, token, now);
         };
-        let opened = token::open(ONCE, &self.ring, self.window, binding, token, now)?;
+        let opened = token::open(ONCE, &self.ring, self.once_window, binding, token, now)?;
         let issued_at = opened.issued_at();
         let use_ = NonceUse {
             session: binding.session,
             nonce: opened.nonce(),
             issued_at,
             expires_at: issued_at
-                .saturating_add(u64::from(self.window.lifetime))
-                .saturating_add(u64::from(self.window.skew)),
+                .saturating_add(u64::from(self.once_window.lifetime))
+                .saturating_add(u64::from(self.once_window.skew)),
             now,
         };
         match store.consume(&use_) {
             Ok(true) => Ok(opened.verified()),
             Ok(false) => Err(Rejected::new(Reason::AlreadyUsed)),
+            Err(StoreError::SessionLimit) => Err(Rejected::new(Reason::TooManyUses)),
             Err(_) => Err(Rejected::new(Reason::StoreUnavailable)),
         }
     }
 
     /// The request origin policy alone (layer 1), whatever the mode.
+    ///
+    /// `Ok` is not a pass on its own: `Ok(OriginCheck::NoFacts)` means the
+    /// request carried nothing to judge (no Fetch Metadata, `Origin`, or
+    /// `Referer`), and only a token can decide such a request. Use
+    /// [`check`](Self::check) to gate requests; use `policy` for logging or for
+    /// `PolicyOnly`-style decisions where you handle `NoFacts` yourself.
     ///
     /// # Errors
     ///
@@ -237,24 +256,30 @@ impl Csrf {
     }
 
     /// A new `Csrf` that signs with `key` under `id`, keeping the current
-    /// signing key as retired until one lifetime plus skew after `now`, so no
-    /// open form fails. Retired keys already expired at `now` are dropped. If
-    /// `id` is an accepted (staged) key with the same key bytes, it is
-    /// promoted.
+    /// signing key as retired for one lifetime plus skew after `now` (to the
+    /// last second of the last token it could have signed), so no open form
+    /// fails. Retired keys already expired at `now` are dropped. If `id` is an
+    /// accepted (staged) key with the same key bytes, it is promoted.
     ///
     /// # Errors
     ///
-    /// [`Error::WeakKey`], [`Error::DuplicateKeyId`] when `id` is still in use
-    /// by another key, [`Error::TooManyKeys`].
+    /// [`Error::Clock`] when `now` is outside 2020 to 2156 (a time in
+    /// milliseconds, say), [`Error::WeakKey`], [`Error::DuplicateKeyId`] when
+    /// `id` is still in use by another key, [`Error::TooManyKeys`]. To rotate
+    /// away from a compromised key on a host whose clock is broken, build a
+    /// new `Csrf` with [`builder`](Self::builder) instead.
     pub fn rotated_at(&self, id: KeyId, key: [u8; KEY_LEN], now: u64) -> Result<Self, Error> {
+        token::issued_at(now)?;
         let key = Zeroizing::new(key);
         let slot = Slot::derive(id, KeyRole::Signing, &key)?;
-        let retire_at = now
-            .saturating_add(u64::from(self.window.lifetime))
-            .saturating_add(u64::from(self.window.skew));
+        // A peer whose clock runs `skew` ahead may sign with the old key until
+        // `now + skew`; that token is valid through `+ lifetime`, inclusive,
+        // and a retired key verifies while `now < retire_at`, hence the `+ 1`.
+        let retire_at = now + u64::from(self.window.lifetime) + u64::from(self.window.skew) + 1;
         Ok(Self {
             ring: self.ring.rotated(slot, now, retire_at)?,
             window: self.window,
+            once_window: self.once_window,
             mode: self.mode,
             policy: self.policy.clone(),
         })
@@ -350,6 +375,7 @@ impl fmt::Debug for Csrf {
         f.debug_struct("Csrf")
             .field("keys", &self.ring)
             .field("lifetime_secs", &self.window.lifetime)
+            .field("once_lifetime_secs", &self.once_window.lifetime)
             .field("skew_secs", &self.window.skew)
             .field("mode", &self.mode)
             .field("policy", &self.policy)
@@ -389,8 +415,12 @@ struct PendingKey {
 /// # }
 /// ```
 pub struct Builder {
+    /// Reserved for `MAX_KEYS` up front and never grown, so no reallocation
+    /// leaves a copy of a key in freed memory.
     keys: Vec<PendingKey>,
+    too_many_keys: bool,
     lifetime: Duration,
+    once_lifetime: Option<Duration>,
     skew: Duration,
     mode: Mode,
     policy: Policy,
@@ -400,8 +430,10 @@ pub struct Builder {
 impl Default for Builder {
     fn default() -> Self {
         Self {
-            keys: Vec::new(),
+            keys: Vec::with_capacity(MAX_KEYS),
+            too_many_keys: false,
             lifetime: DEFAULT_LIFETIME,
+            once_lifetime: None,
             skew: DEFAULT_SKEW,
             mode: Mode::Strict,
             policy: Policy::default(),
@@ -412,11 +444,13 @@ impl Default for Builder {
 
 impl Builder {
     fn push(mut self, id: KeyId, role: KeyRole, key: [u8; KEY_LEN]) -> Self {
-        self.keys.push(PendingKey {
-            id,
-            role,
-            key: Zeroizing::new(key),
-        });
+        let key = Zeroizing::new(key);
+        if self.keys.len() == MAX_KEYS {
+            // Refused by `build`; the key is wiped here rather than stored.
+            self.too_many_keys = true;
+        } else {
+            self.keys.push(PendingKey { id, role, key });
+        }
         self
     }
 
@@ -434,9 +468,11 @@ impl Builder {
         self.push(id, KeyRole::Accepted, key)
     }
 
-    /// A key that verifies until `retire_at` (unix seconds), then is refused
-    /// as [`Reason::UnknownKey`](crate::Reason::UnknownKey). Set `retire_at` at
-    /// least one lifetime plus skew after the key stopped signing.
+    /// A key that verifies until `retire_at` (unix seconds, exclusive), then
+    /// is refused as [`Reason::UnknownKey`](crate::Reason::UnknownKey). Set
+    /// `retire_at` at least one lifetime plus skew plus one second after the
+    /// key stopped signing. A time past 2156 (a time in milliseconds, say) is
+    /// refused by [`build`](Self::build) as [`Error::InvalidRetireTime`].
     #[must_use]
     pub fn retired(self, id: KeyId, key: [u8; KEY_LEN], retire_at: u64) -> Self {
         self.push(id, KeyRole::Retired { until: retire_at }, key)
@@ -447,6 +483,21 @@ impl Builder {
     #[must_use]
     pub fn lifetime(mut self, lifetime: Duration) -> Self {
         self.lifetime = lifetime;
+        self
+    }
+
+    /// How long a one-time token ([`Binding::once`]) stays valid (default 1
+    /// hour, or the general lifetime if that is shorter; at most the general
+    /// lifetime). The store keeps each used one-time token for this long plus
+    /// the skew.
+    ///
+    /// Every node sharing a store must use the same value: the consuming
+    /// node sets the record's expiry, and a node with a longer setting would
+    /// accept the token again after that record expired. When upgrading a
+    /// cluster from 0.8, set this to the lifetime until the rollout ends.
+    #[must_use]
+    pub fn once_lifetime(mut self, lifetime: Duration) -> Self {
+        self.once_lifetime = Some(lifetime);
         self
     }
 
@@ -494,7 +545,7 @@ impl Builder {
     /// [`Error::NoSigningKey`], [`Error::MultipleSigningKeys`],
     /// [`Error::DuplicateKeyId`], [`Error::TooManyKeys`], [`Error::WeakKey`],
     /// [`Error::InvalidLifetime`], [`Error::InvalidSkew`],
-    /// [`Error::InvalidOrigin`].
+    /// [`Error::InvalidOrigin`], [`Error::InvalidRetireTime`].
     pub fn build(self) -> Result<Csrf, Error> {
         if self.invalid_origin {
             return Err(Error::InvalidOrigin);
@@ -508,14 +559,36 @@ impl Builder {
         if skew > lifetime {
             return Err(Error::InvalidSkew);
         }
-        let slots = self
+        let once = match self.once_lifetime {
+            None => lifetime.min(DEFAULT_ONCE_LIFETIME.as_secs() as u32),
+            Some(d) => match u32::try_from(d.as_secs()) {
+                Ok(secs) if secs != 0 && secs <= lifetime => secs,
+                _ => return Err(Error::InvalidLifetime),
+            },
+        };
+        let latest = token::EPOCH + u64::from(u32::MAX) + u64::from(lifetime) + u64::from(skew) + 1;
+        if self
             .keys
             .iter()
-            .map(|k| Slot::derive(k.id, k.role, &k.key))
-            .collect::<Result<Vec<_>, _>>()?;
+            .any(|k| matches!(k.role, KeyRole::Retired { until } if until > latest))
+        {
+            return Err(Error::InvalidRetireTime);
+        }
+        if self.too_many_keys {
+            return Err(Error::TooManyKeys);
+        }
+        // Sized up front: a growing vector would leave subkeys in freed memory.
+        let mut slots = Vec::with_capacity(self.keys.len());
+        for k in &self.keys {
+            slots.push(Slot::derive(k.id, k.role, &k.key)?);
+        }
         Ok(Csrf {
             ring: Ring::new(slots)?,
             window: Window { lifetime, skew },
+            once_window: Window {
+                lifetime: once,
+                skew,
+            },
             mode: self.mode,
             policy: self.policy,
         })
@@ -610,6 +683,54 @@ mod tests {
     }
 
     #[test]
+    fn test_retire_time_limit_is_exact() {
+        let latest = |lifetime: u64, skew: u64| EPOCH + u64::from(u32::MAX) + lifetime + skew + 1;
+        let build = |retire_at: u64, lifetime: u64, skew: u64| {
+            Csrf::builder()
+                .key(KeyId(1), K1)
+                .retired(KeyId(2), K2, retire_at)
+                .lifetime(Duration::from_secs(lifetime))
+                .skew(Duration::from_secs(skew))
+                .build()
+        };
+        for (lifetime, skew) in [(600, 30), (43_200, 60), (7, 7)] {
+            assert!(build(latest(lifetime, skew), lifetime, skew).is_ok());
+            assert_eq!(
+                build(latest(lifetime, skew) + 1, lifetime, skew).unwrap_err(),
+                Error::InvalidRetireTime
+            );
+        }
+    }
+
+    #[test]
+    fn test_builder_never_grows_its_key_buffer() {
+        let key = |i: u8| {
+            let mut k = K1;
+            k[0] = i;
+            k
+        };
+        let mut b = Csrf::builder().key(KeyId(0), key(0));
+        let reserved = b.keys.capacity();
+        assert!(reserved >= crate::MAX_KEYS);
+        for i in 1..crate::MAX_KEYS as u8 {
+            b = b.accept(KeyId(i), key(i));
+        }
+        assert_eq!(b.keys.capacity(), reserved);
+        assert!(!b.too_many_keys);
+        let full = b.keys.len();
+        let b = b.accept(KeyId(99), key(99));
+        assert_eq!((b.keys.len(), b.keys.capacity()), (full, reserved));
+        assert!(b.too_many_keys);
+        assert_eq!(b.build().unwrap_err(), Error::TooManyKeys);
+        // Exactly MAX_KEYS keys build.
+        let mut b = Csrf::builder().key(KeyId(0), key(0));
+        for i in 1..crate::MAX_KEYS as u8 {
+            b = b.accept(KeyId(i), key(i));
+        }
+        assert_eq!(b.build().unwrap().keys().count(), crate::MAX_KEYS);
+    }
+
+    #[test]
     fn test_builder_settings_are_kept() {
         let c = Csrf::builder()
             .key(KeyId(2), K1)
@@ -637,7 +758,7 @@ mod tests {
     fn test_accepts_uses_the_system_clock() {
         let c = Csrf::builder()
             .key(KeyId(1), K1)
-            .retired(KeyId(2), K2, u64::MAX)
+            .retired(KeyId(2), K2, crate::token::EPOCH + u64::from(u32::MAX))
             .retired(KeyId(3), K3, 1)
             .build()
             .unwrap();
@@ -818,11 +939,12 @@ mod tests {
         let v = c2.verify_at(&b, old.as_bytes(), NOW + 50).unwrap();
         assert!(v.retired_key());
         assert_eq!(v.key_id(), Some(KeyId(1)));
-        // Retired until NOW + 110: the old token is expired by then anyway.
-        assert!(c2.accepts_at(KeyId(1), NOW + 109));
-        assert!(!c2.accepts_at(KeyId(1), NOW + 110));
+        // Retired until NOW + 111: one lifetime, the skew, and the final
+        // second. The old token has expired by then anyway.
+        assert!(c2.accepts_at(KeyId(1), NOW + 110));
+        assert!(!c2.accepts_at(KeyId(1), NOW + 111));
         assert_eq!(
-            c2.verify_at(&b, old.as_bytes(), NOW + 110)
+            c2.verify_at(&b, old.as_bytes(), NOW + 111)
                 .unwrap_err()
                 .reason(),
             Reason::UnknownKey
