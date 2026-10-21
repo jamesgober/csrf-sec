@@ -75,11 +75,30 @@ Exit: an independent adversarial review with every finding fixed test-first; the
 - [x] Documentation corrected where the review found it overstated.
 - [x] Long constant-time run (2,000,000 samples per class, \|t\| < 4.5).
 
-## v1.0.0 - Stable (DONE, 2026-10-21)
-Exit: the full audit in `DIRECTIVES.md` section 3, item 10.
-- [x] Every planned feature present, or its outcome recorded (PLAN D-082 to D-086).
-- [x] Two adversarial reviews, every finding fixed test-first (`tests/review.rs`).
-- [x] Constant-time checks run at length (2,000,000 samples per class) on the 1.0 code.
-- [x] Every doc claim compared with the build and corrected where it differed; README and `docs/API.md` compiled as doctests; `cargo doc` clean with default, no default, and all features.
-- [x] A property test for every invariant in `DIRECTIVES.md` section 4; the no-allocation test reaches every refusal reason.
-- [x] API frozen until 2.0; token format frozen for 1.x (README, Stability).
+## v0.9.1 - Audit and OWASP alignment (DONE, 2026-10-21)
+- [x] The DIRECTIVES 3.10 audit: every planned feature present or its outcome recorded (PLAN D-082 to D-086); a property test for every section-4 invariant; the no-allocation test reaches every refusal reason; every doc claim checked against the build; README and `docs/API.md` compiled as doctests; `cargo doc` in all feature modes in CI.
+- [x] Checked point by point against OWASP's CSRF Prevention Cheat Sheet; two deliberate differences recorded (D-088, D-089); the guidance it gives the application is in the docs.
+- [x] Optional expiry: `Builder::no_expiry` (D-088).
+- [x] Long constant-time run on this code (2,000,000 samples per class, |t| < 4.5).
+
+## v1.0.0 - Stable
+1.0 freezes the API until 2.0 and the token format for 1.x, and a crates.io version cannot be taken back, so it waits until the API has been used for real. Each item below is required; nothing is ticked on intent.
+
+**Proven in use**
+- [ ] **A real integration.** gate-net (sessions) and the web-net adapter use csrf-sec from crates.io, in front of real routes: login, logout, a form, a `fetch` API. Every piece of friction they hit is fixed in a 0.9.x or 0.10 release first.
+- [ ] **A shared one-time store.** A `NonceStore` over the store WASP's gates share, set-if-absent with expiry, tested with several nodes consuming the same tokens at once, and the cluster rules (same keys, same `once_lifetime`) checked at deployment.
+- [ ] **The API names, signed off by James.** Every public name is one to live with until 2.0: `Csrf`, `Binding`, `once`, `previous_session`, `check_with`, `no_expiry`, `RequestFacts`, `Reason` names.
+
+**Locked down**
+- [ ] **Token test vectors.** A committed table of fixed key, session, scope, time, and pad giving exact token text, for both layouts, checked by a test, so a change to the format cannot pass CI unnoticed.
+- [ ] **`cargo semver-checks` in CI**, against the last 0.9 release, so no release can break the API by accident.
+- [ ] **`SECURITY.md`.** How to report a vulnerability privately, which versions get fixes, and what response to expect.
+
+**Checked again on the final commit**
+- [ ] **A third adversarial review**, of everything since the second (optional expiry and its interaction with rotation, the audit changes), with every finding fixed test-first.
+- [ ] **Long fuzzing**: hours per target, not the CI smoke run, with no finding.
+- [ ] **The full gate on the release commit**: all platforms and toolchains, mutation testing over the whole crate, the long constant-time run, benchmarks re-measured and `PERFORMANCE.md` updated, every doc claim still true.
+
+**Later, additive in 1.x** (not required for 1.0)
+- Adapter conformance kit: captured browser header sets for adapters to test against (D-085).
+- Example adapters for common frameworks.

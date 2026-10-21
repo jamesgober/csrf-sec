@@ -13,23 +13,29 @@
 
 ---
 
-## [1.0.0] - 2026-10-21
+## [0.9.1] - 2026-10-21
 
-Stable. The full audit (every planned feature, two adversarial reviews, the
-long constant-time run, every doc claim against the build) passed. The public
-API is frozen until 2.0, and the token format for every 1.x release; the terms
-are in the README under Stability. No API changes since 0.9.0.
+The 1.0 audit, the design checked against OWASP's CSRF Prevention Cheat Sheet,
+and optional expiry. Additions only.
 
 ### Added
 
+- `Builder::no_expiry` and `Csrf::expires`: a token can live as long as its
+  session (OWASP's per-session token) instead of expiring after the lifetime.
+  The issue time is still checked against the skew, rotation still retires old
+  keys after one lifetime plus skew, and one-time tokens always expire.
 - Tests: property tests for every section-4 invariant that lacked one (a
   one-time token fails on any character change, a forgery is never reported
   as expired or another benign reason, every method other than `GET`, `HEAD`,
-  and `OPTIONS` is unsafe, `Origin: null` is refused); the no-allocation test
-  now reaches every refusal reason and the streamed MAC for long inputs.
+  and `OPTIONS` is unsafe, `Origin: null` is refused, the no-expiry window);
+  the no-allocation test now reaches every refusal reason and the streamed MAC
+  for long inputs.
 - The README Quick Start is compiled as a doctest; CI checks `cargo doc` with
   default, no default, and all features.
-- A recipe for trying a stricter policy before enforcing it.
+- Recipes and guidance from OWASP's cheat sheet: trying a stricter policy
+  before enforcing it, `Vary: Sec-Fetch-Site, Origin`, trusting forwarded
+  headers, `allow_same_site` and subdomain takeover, HTTPS with HSTS,
+  attaching the token only to your own origin, and client-side CSRF.
 
 ### Fixed
 
@@ -346,8 +352,8 @@ The scaffold and the plan. No functional code yet.
   keys and rotation, verdicts, threats T1-T15, architecture, ecosystem, open
   decisions, decision log), `dev/DIRECTIVES.md`, and `dev/ROADMAP.md`.
 
-[Unreleased]: https://github.com/jamesgober/csrf-sec/compare/v1.0.0...HEAD
-[1.0.0]: https://github.com/jamesgober/csrf-sec/compare/v0.9.0...v1.0.0
+[Unreleased]: https://github.com/jamesgober/csrf-sec/compare/v0.9.1...HEAD
+[0.9.1]: https://github.com/jamesgober/csrf-sec/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/jamesgober/csrf-sec/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/jamesgober/csrf-sec/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/jamesgober/csrf-sec/compare/v0.6.0...v0.7.0

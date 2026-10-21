@@ -29,7 +29,7 @@
         <strong>MSRV is 1.85+</strong> (Rust 2024 edition). <code>#![forbid(unsafe_code)]</code>. <code>no_std</code> core (with <code>alloc</code>).
     </p>
     <blockquote>
-        <strong>Status: <code>1.0.0</code>, stable.</strong> Every feature is built, measured, attacked, checked against real browsers, and caught by mutation testing; two independent adversarial reviews found no way to forge a pass, and every other finding is fixed. The API is frozen until <code>2.0</code> and the token format for every 1.x release (see <a href="#stability">Stability</a>).
+        <strong>Status: <code>0.9.1</code>, release candidate.</strong> Every feature is built, measured, attacked, checked against real browsers, and caught by mutation testing; two independent adversarial reviews found no way to forge a pass, every other finding is fixed, and the design is checked point by point against OWASP's CSRF guidance. <code>1.0</code> waits on the checklist in <a href="./dev/ROADMAP.md"><code>dev/ROADMAP.md</code></a>, the first real integration among it.
     </blockquote>
 </div>
 
@@ -40,7 +40,7 @@
 
 ```toml
 [dependencies]
-csrf-sec = "1"
+csrf-sec = "0.9"
 ```
 
 ## Quick Start
@@ -100,6 +100,7 @@ Measured, same machine and harness (`dev/bench-compare`). csrf-sec is also sessi
 - **Accurate reasons.** The MAC is checked first, so a forged token is never reported as expired, and an expired real token is never reported as forged. A tab opened before login reports `stale_session` (benign), not `bad_mac` (forgery).
 - **One-time tokens** for high-value actions, through a `NonceStore` you choose. Issuing never touches the store, which records only used tokens; the MAC is checked first, so a forged request can neither burn a user's token nor load a shared store, and the in-memory store gives each session its own quota, so no one session can fill it for everyone else.
 - **Rotation that logs nobody out.** Signing, accepted (staged), and retired keys; two-step rotation for clusters, so no node ever sees a token from a key it does not know; public key fingerprints to confirm every node holds the same ring.
+- **Expiry is your choice.** Tokens expire after twelve hours by default; `no_expiry()` makes them live as long as their session, OWASP's per-session token.
 - **Stateless by default.** Any node with the key ring verifies any session token; no shared store, no replication, no bottleneck. Only one-time tokens use a store.
 - **Constant time where it matters.** The tag comparison and the base64url codec (no lookup tables); canonical text only, so any changed character fails.
 - **Fail closed.** If the clock or the random generator fails, no token is issued; nothing panics.
@@ -111,13 +112,13 @@ Measured, same machine and harness (`dev/bench-compare`). csrf-sec is also sessi
 
 ## What it does not stop
 
-Cross-site scripting defeats every CSRF defence, because script on the page can read the token; that is stopped by output encoding and a content security policy. Clickjacking is stopped by `frame-ancestors`. csrf-sec does not parse HTTP, manage sessions, or set cookies.
+Cross-site scripting defeats every CSRF defence, because script on the page can read the token; that is stopped by output encoding and a content security policy. Client-side CSRF, where your own script builds a request from attacker-controlled input (the URL fragment, `postMessage` data) and sends your token with it, is stopped only by never letting such input pick the method, endpoint, or body ([docs](./docs/API.md#single-page-applications)). Clickjacking is stopped by `frame-ancestors`. csrf-sec does not parse HTTP, manage sessions, or set cookies.
 
 <br>
 
 ## Stability
 
-`1.0` freezes the public API until `2.0`. Within 1.x:
+Before `1.0`, a minor release (`0.10`) may still change the API; patch releases (`0.9.x`) only add. `1.0` will freeze the public API until `2.0`. Within 1.x:
 
 - **Additions only.** New methods, types, and builder settings may arrive in minor releases. Enums marked `#[non_exhaustive]` (`Reason`, `Error`, `StoreError`, `OriginCheck`, `KeyRole`, `Mode`, `MethodClass`, `FetchSite`) may gain variants, so match them with a wildcard arm; `NonceUse` may gain fields.
 - **The token format is frozen.** A token issued by any 1.x release verifies on any other 1.x release holding the same key and settings: both layouts (version 1, 59 characters; version 2, 102 characters), the MAC input, and the subkey labels in [Token format](./docs/API.md#token-format) stay as they are. A new layout would get a new version byte, and older versions would keep verifying.
