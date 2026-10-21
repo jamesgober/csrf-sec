@@ -102,37 +102,40 @@ fn welch_t(mut a: Vec<f64>, mut b: Vec<f64>) -> f64 {
     (ma - mb) / (va / na + vb / nb).sqrt()
 }
 
-/// A 64-byte-aligned buffer, so both classes' inputs sit at the same offset
-/// within a cache line. Otherwise their heap addresses differ, and loads that
-/// straddle a cache line for one class but not the other show up as a timing
-/// difference that has nothing to do with the data.
+/// One buffer, aligned to a cache line, that every sample of both classes is
+/// copied into before it is timed. Inputs at different addresses can differ
+/// in cache-line straddles and 4 KiB aliasing with the stack, which shows up
+/// as a timing difference that has nothing to do with the data; from one
+/// address, only the data differs.
 #[repr(align(64))]
 struct Aligned([u8; 128]);
 
 /// Time `run` on inputs of class 0 and class 1, interleaved at random. Each
-/// sample times a batch of calls, so the clock's resolution does not dominate.
+/// sample copies its class's input into the shared buffer (untimed), then
+/// times a batch of calls, so the clock's resolution does not dominate.
 fn measure(inputs: [&[u8]; 2], run: impl Fn(&[u8])) -> f64 {
     const BATCH: usize = 8;
-    let place = |input: &[u8]| {
-        let mut buf = Box::new(Aligned([0u8; 128]));
-        buf.0[..input.len()].copy_from_slice(input);
-        (buf, input.len())
-    };
-    let placed = [place(inputs[0]), place(inputs[1])];
-    let inputs = [&placed[0].0.0[..placed[0].1], &placed[1].0.0[..placed[1].1]];
+    assert_eq!(
+        inputs[0].len(),
+        inputs[1].len(),
+        "classes must have equal length"
+    );
+    let len = inputs[0].len();
+    let mut buf = Box::new(Aligned([0u8; 128]));
     let n = samples();
     let mut times: [Vec<f64>; 2] = [Vec::with_capacity(n), Vec::with_capacity(n)];
     let mut rng = 0x9e37_79b9_7f4a_7c15u64;
-    for _ in 0..1_000 {
-        run(inputs[0]);
-        run(inputs[1]);
+    for i in 0..2_000 {
+        buf.0[..len].copy_from_slice(inputs[i & 1]);
+        run(&buf.0[..len]);
     }
     for _ in 0..2 * n {
         rng ^= rng << 13;
         rng ^= rng >> 7;
         rng ^= rng << 17;
         let class = (rng & 1) as usize;
-        let input = inputs[class];
+        buf.0[..len].copy_from_slice(inputs[class]);
+        let input = black_box(&buf.0[..len]);
         let start = Instant::now();
         for _ in 0..BATCH {
             run(black_box(input));
@@ -223,10 +226,12 @@ fn timing_method_detects_a_real_difference() {
     let c = Csrf::new(*b"timing test key, thirty-two byte").unwrap();
     let b = Binding::new("victim-session");
     let token = c.issue_at(&b, NOW, &mut Pads(2)).unwrap();
-    let short = b"short".to_vec();
-    // A malformed length is refused in a few nanoseconds; a full verify takes
-    // about a hundred.
-    let t = measure([token.as_bytes(), &short], |input| {
+    // Same length, but one is refused at the first character (not base64url,
+    // still a full constant-time decode) and one runs the MAC: a real
+    // difference of about 75 ns.
+    let mut garbage = token.as_bytes().to_vec();
+    garbage.iter_mut().for_each(|c| *c = b'*');
+    let t = measure([token.as_bytes(), &garbage], |input| {
         let _ = black_box(c.verify_at(&b, input, NOW));
     });
     println!("control: t = {t:.2}");
