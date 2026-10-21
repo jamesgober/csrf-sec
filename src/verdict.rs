@@ -180,7 +180,8 @@ impl core::error::Error for Rejected {}
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum OriginCheck {
-    /// The policy was not run (token-only calls and `TokenOnly` mode).
+    /// The policy was not run: token-only calls, and unsafe requests in
+    /// `TokenOnly` mode (a safe method still reports `SafeMethod`).
     NotRun,
     /// A safe method (`GET`, `HEAD`, `OPTIONS`): nothing to check.
     SafeMethod,

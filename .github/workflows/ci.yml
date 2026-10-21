@@ -51,6 +51,14 @@ jobs:
         run: cargo doc --no-deps --all-features
         env:
           RUSTDOCFLAGS: "-D warnings"
+      - name: Doc (default features)
+        run: cargo doc --no-deps
+        env:
+          RUSTDOCFLAGS: "-D warnings"
+      - name: Doc (no default features)
+        run: cargo doc --no-deps --no-default-features
+        env:
+          RUSTDOCFLAGS: "-D warnings"
 
   no_std:
     name: no_std (bare metal, ${{ matrix.rust }})

@@ -75,5 +75,11 @@ Exit: an independent adversarial review with every finding fixed test-first; the
 - [x] Documentation corrected where the review found it overstated.
 - [x] Long constant-time run (2,000,000 samples per class, \|t\| < 4.5).
 
-## v1.0.0 - Stable
-- [ ] The full audit in `DIRECTIVES.md` section 3, item 10.
+## v1.0.0 - Stable (DONE, 2026-10-21)
+Exit: the full audit in `DIRECTIVES.md` section 3, item 10.
+- [x] Every planned feature present, or its outcome recorded (PLAN D-082 to D-086).
+- [x] Two adversarial reviews, every finding fixed test-first (`tests/review.rs`).
+- [x] Constant-time checks run at length (2,000,000 samples per class) on the 1.0 code.
+- [x] Every doc claim compared with the build and corrected where it differed; README and `docs/API.md` compiled as doctests; `cargo doc` clean with default, no default, and all features.
+- [x] A property test for every invariant in `DIRECTIVES.md` section 4; the no-allocation test reaches every refusal reason.
+- [x] API frozen until 2.0; token format frozen for 1.x (README, Stability).

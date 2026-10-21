@@ -32,8 +32,9 @@ pub const DEFAULT_ONCE_LIFETIME: Duration = Duration::from_secs(3600);
 ///
 /// A `Csrf` is immutable once built: `Send + Sync`, cheap to share behind an
 /// `Arc`, and nothing on the issue or verify path takes a lock or touches a
-/// shared counter. Rotation builds a new value ([`rotated`](Self::rotated))
-/// that the application swaps in.
+/// shared counter. Rotation builds a new value (`rotated`, or
+/// [`rotated_at`](Self::rotated_at) without `std`) that the application swaps
+/// in.
 ///
 /// # Tier 1
 ///
@@ -204,9 +205,10 @@ impl Csrf {
     ///
     /// `Ok` is not a pass on its own: `Ok(OriginCheck::NoFacts)` means the
     /// request carried nothing to judge (no Fetch Metadata, `Origin`, or
-    /// `Referer`), and only a token can decide such a request. Use
-    /// [`check`](Self::check) to gate requests; use `policy` for logging or for
-    /// `PolicyOnly`-style decisions where you handle `NoFacts` yourself.
+    /// `Referer`), and only a token can decide such a request. Use `check`
+    /// (or [`check_at`](Self::check_at)) to gate requests; use `policy` for
+    /// logging or for `PolicyOnly`-style decisions where you handle `NoFacts`
+    /// yourself.
     ///
     /// # Errors
     ///
@@ -493,8 +495,7 @@ impl Builder {
     ///
     /// Every node sharing a store must use the same value: the consuming
     /// node sets the record's expiry, and a node with a longer setting would
-    /// accept the token again after that record expired. When upgrading a
-    /// cluster from 0.8, set this to the lifetime until the rollout ends.
+    /// accept the token again after that record expired.
     #[must_use]
     pub fn once_lifetime(mut self, lifetime: Duration) -> Self {
         self.once_lifetime = Some(lifetime);

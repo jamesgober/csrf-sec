@@ -105,7 +105,8 @@ impl fmt::Debug for NonceUse<'_> {
 /// Remembers which one-time tokens were used.
 ///
 /// Implement it over a store every node reaches for a cluster (WASP: the
-/// gates' session store); [`MemoryStore`] serves one node and tests.
+/// gates' session store); `MemoryStore` (feature `std`) serves one node and
+/// tests.
 ///
 /// # Contract
 ///
@@ -254,8 +255,9 @@ mod memory {
     /// with [`with_session_limit`](Self::with_session_limit)), so one session,
     /// even one an attacker controls, cannot fill the store for everyone else.
     /// Each shard holds at most `capacity / 64` (rounded up) records, and a
-    /// session at most an eighth of a shard, whatever its limit, so filling a
-    /// shard always takes several sessions. When a shard or a session is full,
+    /// session at most an eighth of a shard whatever its limit (but always at
+    /// least one record), so in a store of 512 records or more filling a shard
+    /// takes at least eight sessions. When a shard or a session is full,
     /// expired records are dropped first; if none has expired, the use is
     /// refused (fail closed) without scanning the shard. Only submitted tokens
     /// take space: issuing never touches the store, and records last the
@@ -308,9 +310,9 @@ mod memory {
         ///
         /// The capacity is split evenly over 64 shards, all of one session's
         /// records live in one shard, and a session may hold at most an eighth
-        /// of its shard: size the store at 512 times the session limit or
-        /// more (the default limit of 64 wants at least 32,768, about 2 MB),
-        /// or the limit is lowered to fit
+        /// of its shard (at least one record): size the store at 512 times the
+        /// session limit or more (the default limit of 64 wants at least
+        /// 32,768, about 2 MB), or the limit is lowered to fit
         /// ([`session_limit`](Self::session_limit) reports it).
         #[must_use]
         pub fn new(capacity: usize) -> Self {

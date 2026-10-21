@@ -4,7 +4,7 @@
 >
 > **Read order:** [`../REPS.md`](../REPS.md) &rarr; [`DIRECTIVES.md`](./DIRECTIVES.md) &rarr; **this file** &rarr; [`ROADMAP.md`](./ROADMAP.md).
 >
-> **Status:** `0.9.0`, release candidate: two independent adversarial reviews found no way to forge a pass; every finding of both is fixed test-first (`tests/review.rs`). Next: `1.0.0` after the full audit. The public surface is [`../docs/API.md`](../docs/API.md), compiled as a doctest; costs are in [`../docs/PERFORMANCE.md`](../docs/PERFORMANCE.md).
+> **Status:** `1.0.0`, stable: the full audit passed (D-087), the API is frozen until `2.0`, and the token format for every 1.x release. The public surface is [`../docs/API.md`](../docs/API.md), compiled as a doctest; costs are in [`../docs/PERFORMANCE.md`](../docs/PERFORMANCE.md).
 
 ---
 
@@ -85,7 +85,7 @@ Goals, in order: security, then performance, then efficiency, then simplicity of
 | setting cookies, `SameSite`, the `__Host-` prefix | cookie-net (guidance documented here) |
 | cross-site scripting | output encoding and the content security policy (shield-sec, web-net); script on the page can read any token, so XSS defeats every CSRF defence |
 | clickjacking | frame options and CSP `frame-ancestors` |
-| key custody | key-vault (optional feature) |
+| key custody | the application or key-vault, outside this crate (D-083) |
 
 ---
 
@@ -105,8 +105,11 @@ Browsers send `Sec-Fetch-Site` (`same-origin`, `same-site`, `cross-site`, `none`
             cross-site                  ─▶ refuse, unless the origin is on the allowlist
           absent (older browser or non-browser client) ─▶ Origin present?
             matches an allowed origin   ─▶ pass
-            "null" or mismatch          ─▶ refuse
-            absent ─▶ Referer origin matches? pass : decided by the token alone (layer 2)
+            "null", malformed, mismatch ─▶ refuse
+            absent ─▶ Referer present?
+                       its origin matches ─▶ pass
+                       null, malformed, mismatch ─▶ refuse (D-018, D-069)
+                       absent ─▶ NoFacts: decided by the token alone (layer 2)
 ```
 
 ### 4.2 Layer 2: signed, session-bound token
@@ -191,16 +194,21 @@ One-time tokens for high-value actions (D-011, D-035). A one-time token is a sig
 ### 7.1 Order
 
 ```
- 1 length within bounds?                       (before any decoding: T11)
- 2 decode base64url (branch-free)
- 3 unmask
- 4 version known?
- 5 key id in the ring?                          unknown id ─▶ UnknownKey
- 6 MAC verifies (constant time)?               no ─▶ BadMac (forgery)
- 7 issued at within lifetime and skew?         no ─▶ Expired
- 8 scope matches?                              no ─▶ WrongScope
- 9 pass (signed by a retired key ─▶ pass, reported as RetiredKey for metrics)
+ 1 empty token?                                ─▶ Missing
+   empty session id?                           ─▶ Unverifiable
+ 2 length exactly 59 (or 102 one-time)?        (before any decoding: T11) no ─▶ Malformed
+ 3 decode base64url (constant time, canonical) no ─▶ Malformed
+ 4 unmask; version known?                      no ─▶ Malformed
+ 5 key id in the ring (and not retired)?       no ─▶ UnknownKey
+ 6 MAC verifies (constant time)?               no ─▶ unscoped token on a scoped binding? WrongScope
+                                                     issued for the previous session?    StaleSession
+                                                     otherwise                           BadMac
+ 7 issued at within the window?                late ─▶ Expired, early ─▶ NotYetValid
+ 8 one-time binding: store.consume             used ─▶ AlreadyUsed, quota ─▶ TooManyUses, error ─▶ StoreUnavailable
+ 9 pass (signed by a retired key: Verified::retired_key())
 ```
+
+(This is the shipped order; the scope check moved inside the MAC, D-012.)
 
 The MAC is checked before expiry and scope so the reason is accurate: an expired real token (a glitch) and a forged token (an attack) are told apart, which WASP's severity scoring needs (`WASP.md` section 7.6). The work is fixed and bounded either way.
 
@@ -213,17 +221,17 @@ A session mismatch shows up as `BadMac`, because the session id is inside the MA
 | `Missing` | a client bug or a forged form without a token | 5 |
 | `Malformed` | tampering or truncation | 10 |
 | `UnknownKey` | a very old token, or tampering | 5 |
-| `RetiredKey` | rotation (passes) | 0 |
 | `BadMac` | forgery | 40 |
 | `StaleSession` | the user signed in again in another tab | 1 |
 | `Expired` | an old tab | 1 |
-| `WrongScope` | a token taken from another form | 20 |
+| `WrongScope` | an unscoped token presented to a scoped action (D-012) | 20 |
 | `CrossSite` | layer 1: a cross-site unsafe request | 30 |
 | `OriginMismatch` | layer 1: a foreign origin | 30 |
 | `NotYetValid` | a node clock ahead by more than the skew (D-012) | 5 |
 | `Unverifiable` | the check cannot run: no session id, or no Fetch Metadata in `PolicyOnly` (D-012) | 5 |
 | `AlreadyUsed` | a one-time token presented twice (D-012) | 20 |
 | `StoreUnavailable` | the one-time store could not answer (D-012) | 5 |
+| `TooManyUses` | a session over its one-time store quota (D-079) | 10 |
 
 The reason is for logs and scoring only. Clients receive a generic refusal. `RetiredKey` is not a rejection: a token signed by a retired key passes and reports it through `Verified::retired_key()`.
 
@@ -275,12 +283,14 @@ let token = csrf.issue_scoped(session_id, Scope::action("POST /account/email"));
 ### 8.3 Tier 3 (no allocation, `no_std`)
 
 ```rust
-let mut out = [0u8; csrf_sec::TOKEN_LEN];                // 59
-csrf.issue_into(session_id, Scope::NONE, &mut pad_source, &mut out)?;
-let verdict: Verdict = csrf.verify_bytes(session_id, Scope::NONE, &bytes);
+let token = csrf.issue_at(&binding, now, &mut pads)?;    // Token: 59 characters, inline, no allocation
+let verdict: Verdict = csrf.verify_at(&binding, token.as_bytes(), now);
+let verdict: Verdict = csrf.check_at(&facts, &binding, submitted, now);
 ```
 
-`RequestFacts` is a plain value the adapter fills: method class (safe or unsafe), `Sec-Fetch-Site`, `Sec-Fetch-Mode`, `Origin`, `Referer` origin, and the request's own origin.
+(The shipped shape; the sketch with `issue_into` and `Scope::NONE` was replaced by `Binding` and an inline `Token`.)
+
+`RequestFacts` is a plain value the adapter fills: the method, `Sec-Fetch-Site`, `Origin`, `Referer`, and the request's own origin. `Sec-Fetch-Mode` was dropped (D-084).
 
 All public enums and structs that may grow are `#[non_exhaustive]`.
 
@@ -323,8 +333,8 @@ src/
   pad.rs        PadSource, OsPads (per-thread buffer, std)
   b64.rs        base64url codec (constant time, canonical, fixed length)
   binding.rs    Binding
-  policy.rs     RequestFacts, MethodClass, FetchSite, origin matching, Mode, OriginCheck
-  verdict.rs    Verdict, Verified, Rejected, Reason, severity
+  policy.rs     RequestFacts, MethodClass, FetchSite, origin matching, Mode
+  verdict.rs    Verdict, Verified, Rejected, Reason, severity, OriginCheck
   once.rs       NonceStore, StoreError, MemoryStore (std)
   error.rs      Error (#[non_exhaustive])
 ```
@@ -361,7 +371,7 @@ src/
 |---|---|---|
 | `crypt-io` 1.1 | keyed BLAKE3 (`mac::blake3_keyed`), `Tag<N>` constant-time compare, HKDF, `Zeroizing` | published; no free-standing `ct_eq` for slices (`Tag<16>` covers the tag compare; anything more goes into crypt-io in its own change rather than pulling `subtle` directly) |
 | `mod-rand` 1.0 | OS CSPRNG (`tier3::fill_bytes`) for pads and key generation | published; edition 2021, MSRV 1.75 (fine as a dependency) |
-| `key-vault` 1.1 | optional key custody, behind a feature | published; has third-party dependencies, so optional only |
+| `key-vault` 1.1 | not used: keys come in as 32 bytes; deriving them from a vault master is the application's call (D-083) | published |
 | `clock-lib` | mocked time in tests, if the time seam needs it (O-3) | published |
 
 No third-party runtime dependency of our own (crypt-io's audited primitives are the accepted exception). No async runtime. Version dependencies only, never `path`.
@@ -422,16 +432,16 @@ All seven questions from `0.1.0` are answered (D-008 to D-014). None is open.
 
 Each idea is a hypothesis with a method and an expected cost, tried in the phase noted or later.
 
-Outcomes so far: key fingerprints adopted (D-041); forgery-rate feedback adopted as documentation (D-047); session epoch, audience, custom-header, simple-content-type, and store-free replay filter rejected with reasons (D-042 to D-046).
+Outcomes: key fingerprints adopted (D-041); forgery-rate feedback adopted as documentation (D-047); session epoch, audience, custom-header, simple-content-type, and store-free replay filter rejected with reasons (D-042 to D-046); mutation testing adopted (D-059, D-062); shadow mode kept as a recipe (D-082); the adapter conformance kit left for after 1.0 (D-085). Every idea here has an outcome.
 
-- **Shadow mode for policy changes (0.5).** Hypothesis: operators moving from `TokenOnly` to `Strict`, or tightening the allowlist, need to see what the new policy would refuse before enforcing it, or they will not tighten it at all. Method: a `check` variant that enforces the current configuration and also reports the verdict a candidate configuration would give, for logging only. Cost [est.]: one extra layer-1 decision (≤ 50 ns) when enabled; nothing otherwise.
+- **Shadow mode for policy changes (0.5).** Hypothesis: operators moving from `TokenOnly` to `Strict`, or tightening the allowlist, need to see what the new policy would refuse before enforcing it, or they will not tighten it at all. Method: a `check` variant that enforces the current configuration and also reports the verdict a candidate configuration would give, for logging only. Cost [est.]: one extra layer-1 decision (≤ 50 ns) when enabled; nothing otherwise. **Outcome:** no new API; a recipe with a second `Csrf` built from the candidate settings (D-082).
 - **Session epoch binding.** Hypothesis: binding a session generation counter (bumped by the gates on password change or privilege change) into the MAC revokes every outstanding token for a session without changing the session id. Method: optional `epoch: u64` in the MAC input. Cost [est.]: 8 bytes of MAC input, ~0 ns. **Outcome:** rejected as a field, kept as a recipe (D-043).
 - **Custom-header fact.** Hypothesis: for JSON APIs, requiring a non-simple request header (which forces a CORS preflight) blocks cross-site form posts with no token at all, as a layer-1 fact for `PolicyOnly`. Method: `RequestFacts::custom_header(bool)`. Cost [est.]: ~1 ns. **Outcome:** rejected (D-045).
 - **Audience binding.** Hypothesis: multi-tenant hosts sharing one key ring can bind the target origin into the MAC so a token rendered for tenant A never verifies on tenant B, even with a colliding session id. Method: an optional audience field in the MAC input. Cost [est.]: one extra BLAKE3 block only when the audience pushes the input past 64 bytes. **Outcome:** rejected as a field, kept as a recipe (D-044).
 - **Key-commitment check on rotation (0.2).** Hypothesis: a misdeployed cluster (two nodes holding different bytes under the same key id) fails silently as `BadMac` storms that look like an attack. Method: expose a short public fingerprint per key id (keyed BLAKE3 of a fixed label under the subkey, 8 bytes) so deployment tooling can compare rings across nodes without revealing keys. Cost [est.]: one BLAKE3 per key at construction; nothing per request. **Outcome:** adopted as `KeyFingerprint` and `Csrf::keys()` (D-041).
 - **Simple-content-type fact (0.3).** Hypothesis: a cross-site form post needs no CORS preflight only when its content type is "simple" (`application/x-www-form-urlencoded`, `multipart/form-data`, `text/plain`). JSON APIs that refuse simple content types on unsafe requests close the no-preflight path even for browsers without Fetch Metadata, with no token at all. Method: `RequestFacts::content_type(value)` and a `PolicyOnly` rule that refuses simple types when `Sec-Fetch-Site` is absent. Cost [est.]: ~5 ns, a few byte comparisons. **Outcome:** rejected (D-042).
 - **Store-free single use for short windows (0.4).** Hypothesis: for one-time tokens with very short lifetimes (seconds), a per-node replay filter over recently consumed nonces (a rotating pair of fixed-size bit sets, cleared every lifetime) gives single use without a shared store when requests are pinned to one node. Method: a `NonceStore` implementation with a bounded false-positive rate (a false positive refuses a fresh token, fail closed). Cost [est.]: two bit-set probes per verify, fixed memory; no allocation after start. **Outcome:** rejected (D-046).
-- **Adapter conformance kit (0.8).** Hypothesis: adapters break CSRF protection most often by passing the wrong value (a header from the wrong source, an own origin rebuilt from a proxied `Host`, an empty session id). Method: header sets captured from real browsers (Chromium, Firefox, Safari: same-origin, same-site, cross-site, navigation, `fetch`, privacy modes) as a test table that a framework adapter runs against its own request type, expecting the documented verdict for each. Cost: none at run time; test-only data.
+- **Adapter conformance kit (0.8).** Hypothesis: adapters break CSRF protection most often by passing the wrong value (a header from the wrong source, an own origin rebuilt from a proxied `Host`, an empty session id). Method: header sets captured from real browsers (Chromium, Firefox, Safari: same-origin, same-site, cross-site, navigation, `fetch`, privacy modes) as a test table that a framework adapter runs against its own request type, expecting the documented verdict for each. Cost: none at run time; test-only data. **Outcome:** left for after 1.0, as test data outside the API (D-085).
 - **Mutation testing (0.7).** **Outcome:** adopted (D-059, D-062). Hypothesis: a test suite can pass while missing whole behaviours; mutating the code (flip a comparison, drop a check, return early) and requiring some test to fail for every mutant shows what the tests really pin down. Method: `cargo-mutants` over `token.rs`, `b64.rs`, `policy.rs`, `key.rs`, and `csrf.rs`, every surviving mutant either killed by a new test or recorded as equivalent. Cost: CI minutes only, run per release.
 - **Forgery-rate feedback.** Hypothesis: `BadMac` rates per session are a strong signal of an active attack against that user. Method: document the event shape for sentinel-sec; no state in this crate. Cost: none here. **Outcome:** adopted as documentation (D-047).
 
@@ -521,4 +531,10 @@ Outcomes so far: key fingerprints adopted (D-041); forgery-rate feedback adopted
 | D-079 | 2026-10-21 | `StoreError::SessionLimit` is reported as a new reason, `TooManyUses` (`too_many_uses`, severity 10), apart from `StoreUnavailable` | operators need to tell quota abuse (an attack signal) from a store outage. The many-sessions limit of the quota and the advice to rate-limit one-time issuing are documented |
 | D-080 | 2026-10-21 | The builder reserves its key buffer for `MAX_KEYS` and never grows it (a 17th key is wiped and refused at `build`), the subkey vector is sized before it is filled, and the expected tag is wiped after the comparison | a growing `Vec` frees its old buffer without wiping it, which left raw keys and subkeys in freed heap memory; the expected tag is a valid tag for the attacker's header and the victim's session. Copies a move leaves on the stack are out of reach of safe Rust; the docs now say so instead of claiming no copy outlives the call |
 | D-081 | 2026-10-21 | Documented: `rotated` refuses on a broken clock (build a new `Csrf` instead for an emergency rotation); the 0.9 policy changes (a malformed `own_origin`, such as a trailing slash or a Unicode host, now refuses; a non-URL `Referer` from a non-browser client is refused with nothing configured) are in the upgrade notes | both fail closed by design, and both can surprise an upgrade |
+| D-082 | 2026-10-21 | Shadow mode (parking lot) gets no API: to try a stricter policy, build a second `Csrf` from the candidate settings and log its `check_at` (or `policy`) verdict next to the enforcing one; a recipe in `docs/API.md` | the candidate is just another configuration, and `Csrf` is cheap to build and share; a dedicated call would freeze one shape of comparison into the 1.0 API for something two existing calls already do |
+| D-083 | 2026-10-21 | No `key-vault` feature: keys come in as 32 bytes, and deriving them from a vault master (HKDF over a vault secret, say) is the application's call | an optional feature would pull key-vault's third-party dependencies into the tree and tie csrf-sec's releases to key-vault's; the boundary is one `[u8; 32]`, documented with the recipe |
+| D-084 | 2026-10-21 | `Sec-Fetch-Mode` is not a request fact | the forgery question is where the request came from, which `Sec-Fetch-Site` and `Origin` answer; the mode (navigate, cors, no-cors) does not change it, and a policy that keyed on it would refuse legitimate requests without stopping any forgery. `RequestFacts` can gain fields later without breaking callers, since it is built through methods |
+| D-085 | 2026-10-21 | The adapter conformance kit is left for after 1.0, as test data outside the public API | it is a table of captured browser header sets for adapters to run, which needs no change to this crate's API; 0.8 checked a complete adapter against real browsers (`examples/server.rs`) |
+| D-086 | 2026-10-21 | No separate fuzz target for the base64url decoder | the decoder is private; the `verify` and `mutate` targets feed arbitrary and mutated text straight into it through the public API, and unit tests compare every SWAR lane with the scalar code and every invalid character position |
+| D-087 | 2026-10-21 | 1.0 audit (DIRECTIVES 3, item 10): property tests added for every section-4 invariant that lacked one (one-time character changes, forgeries never named benign, every non-safe method unsafe, `Origin: null` refused); the no-allocation test now reaches every refusal reason and the streamed MAC; docs corrected where they disagreed with the build; `cargo doc` checked in CI with default, no default, and all features | the audit compared every doc claim with the code and every planned item with what shipped; each disagreement is fixed or recorded here |
 | D-038 | 2026-10-21 | The nonce is drawn from the same `PadSource` as the pad, before it | one randomness seam for Tier 3 and `no_std`; the order is part of the documented format so the independent reimplementation test can rebuild a token exactly |

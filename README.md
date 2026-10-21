@@ -29,7 +29,7 @@
         <strong>MSRV is 1.85+</strong> (Rust 2024 edition). <code>#![forbid(unsafe_code)]</code>. <code>no_std</code> core (with <code>alloc</code>).
     </p>
     <blockquote>
-        <strong>Status: <code>0.9.0</code>, release candidate.</strong> Every feature is built, measured, attacked, checked against real browsers, and caught by mutation testing; two independent adversarial reviews found no way to forge a pass, and every other finding is fixed. Next is <code>1.0</code>, after the full audit. The schedule is <a href="./dev/ROADMAP.md"><code>dev/ROADMAP.md</code></a>.
+        <strong>Status: <code>1.0.0</code>, stable.</strong> Every feature is built, measured, attacked, checked against real browsers, and caught by mutation testing; two independent adversarial reviews found no way to forge a pass, and every other finding is fixed. The API is frozen until <code>2.0</code> and the token format for every 1.x release (see <a href="#stability">Stability</a>).
     </blockquote>
 </div>
 
@@ -40,28 +40,31 @@
 
 ```toml
 [dependencies]
-csrf-sec = "0.9.0"
+csrf-sec = "1"
 ```
 
 ## Quick Start
 
 ```rust
-use csrf_sec::{Csrf, RequestFacts};
+use csrf_sec::{Csrf, Error, RequestFacts};
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let key: [u8; 32] = load_persisted_key();
-    let csrf = Csrf::new(key)?;
+// At startup, once: a persisted 32-byte key (never one generated at boot).
+fn protection(key: [u8; 32]) -> Result<Csrf, Error> {
+    Csrf::new(key)
+}
 
-    // Rendering a form: 59 characters, different on every call.
-    let token = csrf.issue(session_id)?;
+// Rendering a form: 59 characters, different on every call.
+fn form_token(csrf: &Csrf, session_id: &str) -> Result<String, Error> {
+    Ok(csrf.issue(session_id)?.as_str().to_owned())
+}
 
-    // Handling the POST: request policy and token.
+// Handling the POST: request policy and token. `false`: send a generic 403.
+fn allowed(csrf: &Csrf, session_id: &str, sec_fetch_site: &str, origin: &str, submitted: &str) -> bool {
     let facts = RequestFacts::new("POST")
         .fetch_site(sec_fetch_site)        // Sec-Fetch-Site header
         .origin(origin)                    // Origin header
         .own_origin("https://example.com");
-    csrf.check(&facts, session_id, submitted_token)?;   // Err: send a generic 403
-    Ok(())
+    csrf.check(&facts, session_id, submitted).is_ok()
 }
 ```
 
@@ -73,7 +76,7 @@ A refusal carries a reason (`bad_mac`, `cross_site`, `expired`, ...) and a sever
 
 | Layer | Stops | Cost (measured) |
 |---|---|---|
-| **Request origin policy.** `Sec-Fetch-Site: cross-site` on an unsafe request is refused unless its origin is allowlisted; without Fetch Metadata, `Origin` (then `Referer`) must match this site. Script cannot forge these headers. | cross-site form posts, `Origin: null` tricks, top-level cross-site POST navigation | 1.3 ns on Fetch Metadata, 19 to 37 ns on `Origin` and `Referer` |
+| **Request origin policy.** `Sec-Fetch-Site: cross-site` on an unsafe request is refused unless its origin is allowlisted; without Fetch Metadata, `Origin` (then `Referer`) must match this site. Script cannot forge these headers. | cross-site form posts, `Origin: null` tricks, top-level cross-site POST navigation | 1.3 ns on Fetch Metadata, 23 to 37 ns on `Origin` and `Referer` |
 | **Signed, session-bound token.** Keyed BLAKE3 over the session id (and optionally one action), 128-bit tag, compared in constant time; the session id never appears in the token. | forged and replayed-across-session tokens, tokens taken from another form | verify 110 ns, issue 112 ns |
 | **Per-response masking.** Every page shows different token text (fresh CSPRNG pad), all of it valid. | BREACH-style recovery from compressed pages | 28 ns per pad on Linux, 8 ns on Windows |
 | **Cookie guidance.** `__Host-` prefix, `SameSite=Lax`, `Secure`, `HttpOnly` on the session cookie, applied by your cookie layer. Tokens are never compared to a cookie. | a sibling subdomain planting a session cookie (the prefix, not the MAC, stops this) | none |
@@ -111,6 +114,15 @@ Measured, same machine and harness (`dev/bench-compare`). csrf-sec is also sessi
 Cross-site scripting defeats every CSRF defence, because script on the page can read the token; that is stopped by output encoding and a content security policy. Clickjacking is stopped by `frame-ancestors`. csrf-sec does not parse HTTP, manage sessions, or set cookies.
 
 <br>
+
+## Stability
+
+`1.0` freezes the public API until `2.0`. Within 1.x:
+
+- **Additions only.** New methods, types, and builder settings may arrive in minor releases. Enums marked `#[non_exhaustive]` (`Reason`, `Error`, `StoreError`, `OriginCheck`, `KeyRole`, `Mode`, `MethodClass`, `FetchSite`) may gain variants, so match them with a wildcard arm; `NonceUse` may gain fields.
+- **The token format is frozen.** A token issued by any 1.x release verifies on any other 1.x release holding the same key and settings: both layouts (version 1, 59 characters; version 2, 102 characters), the MAC input, and the subkey labels in [Token format](./docs/API.md#token-format) stay as they are. A new layout would get a new version byte, and older versions would keep verifying.
+- **Reasons keep their names.** `Reason::as_str` values (`bad_mac`, `expired`, ...) are stable for logs and dashboards; severities may be retuned in a minor release.
+- **MSRV 1.85.** Raising it is a minor release, never a patch.
 
 ## Documentation
 
