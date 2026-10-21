@@ -8,12 +8,12 @@
 ## v0.1.0 - Scaffold (DONE, 2026-10-21)
 - [x] Manifest, README, CHANGELOG, REPS, dual license, CI, deny, clippy, rustfmt, DIRECTIVES, ROADMAP, PLAN.
 
-## v0.2.0 - Design lock
+## v0.2.0 - Design lock (DONE, 2026-10-21)
 Exit: the full public API (types, signatures, errors, reasons, examples) written in `docs/API.md`; every open decision in `PLAN.md` answered and logged; the token format frozen on paper.
-- [ ] Open decisions O-1 to O-7 answered and logged.
-- [ ] Token format, MAC input encoding, and masking written byte by byte.
-- [ ] Tier 1, Tier 2, and Tier 3 signatures; `RequestFacts`; `Verdict`, `Reason`, `Rejected`; construction errors.
-- [ ] Feature flags (`std`, `alloc`) and what each adds.
+- [x] Open decisions O-1 to O-7 answered and logged (D-008 to D-014).
+- [x] Token format, MAC input encoding, and masking written byte by byte.
+- [x] Tier 1, Tier 2, and Tier 3 signatures; `Binding`; `RequestFacts`; `Verdict`, `Reason`, `Rejected`; errors (D-015 to D-026).
+- [x] Feature flags (`std`, `alloc`) and what each adds.
 
 ## v0.3.0 - Core
 Exit: tokens issue and verify end to end under a key ring with rotation; Tier 1 works; every verify-path reason has a test.
@@ -32,9 +32,9 @@ Exit: `check` applies layer 1 and layer 2 per mode; every branch of the policy d
 
 ## v0.5.0 - Feature complete
 Exit: every planned feature present and tested; the `no_std` core builds in CI.
-- [ ] Scopes.
-- [ ] One-time tokens and the store seam, with an in-memory store.
-- [ ] Tier 3 (`issue_into`, `verify_bytes`, pad sources).
+- [ ] Scopes and `WrongScope`.
+- [ ] One-time tokens and the `NonceStore` seam, with `MemoryStore`.
+- [ ] Tier 3 (`issue_at`, `verify_at`, `check_at`, `PadSource`).
 - [ ] `no_std` build check in CI.
 
 ## v0.6.0 - Optimization
