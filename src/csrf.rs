@@ -129,6 +129,14 @@ impl Csrf {
         Duration::from_secs(u64::from(self.window.lifetime))
     }
 
+    /// Whether tokens expire after [`lifetime`](Self::lifetime) (the
+    /// default), or live as long as their session
+    /// ([`Builder::no_expiry`]).
+    #[must_use]
+    pub fn expires(&self) -> bool {
+        self.window.expires
+    }
+
     /// The tolerated clock skew.
     #[must_use]
     pub fn skew(&self) -> Duration {
@@ -377,6 +385,7 @@ impl fmt::Debug for Csrf {
         f.debug_struct("Csrf")
             .field("keys", &self.ring)
             .field("lifetime_secs", &self.window.lifetime)
+            .field("expires", &self.window.expires)
             .field("once_lifetime_secs", &self.once_window.lifetime)
             .field("skew_secs", &self.window.skew)
             .field("mode", &self.mode)
@@ -422,6 +431,7 @@ pub struct Builder {
     keys: Vec<PendingKey>,
     too_many_keys: bool,
     lifetime: Duration,
+    expires: bool,
     once_lifetime: Option<Duration>,
     skew: Duration,
     mode: Mode,
@@ -435,6 +445,7 @@ impl Default for Builder {
             keys: Vec::with_capacity(MAX_KEYS),
             too_many_keys: false,
             lifetime: DEFAULT_LIFETIME,
+            expires: true,
             once_lifetime: None,
             skew: DEFAULT_SKEW,
             mode: Mode::Strict,
@@ -481,10 +492,33 @@ impl Builder {
     }
 
     /// How long a token stays valid after it is issued (default 12 hours;
-    /// whole seconds; 1 second to `u32::MAX` seconds).
+    /// whole seconds; 1 second to `u32::MAX` seconds). With
+    /// [`no_expiry`](Self::no_expiry) it only sets how long a rotated-out key
+    /// keeps verifying.
     #[must_use]
     pub fn lifetime(mut self, lifetime: Duration) -> Self {
         self.lifetime = lifetime;
+        self
+    }
+
+    /// Tokens never expire on their own: a token stays valid for as long as
+    /// the session id it is bound to, the per-session token OWASP describes.
+    /// Your session layer ends it, by rotating the session id at login and
+    /// ending the session at logout.
+    ///
+    /// The issue time is still checked against the skew, so a token from the
+    /// future is refused. Key rotation still ends old tokens: a rotated-out
+    /// key keeps verifying for one [`lifetime`](Self::lifetime) plus skew,
+    /// then its tokens fail as `unknown_key`. One-time tokens always expire,
+    /// after [`once_lifetime`](Self::once_lifetime), which may then be longer
+    /// than the lifetime.
+    ///
+    /// The trade-off: a token that leaks (from a log, a cache, a shared
+    /// screen) stays usable for that session until the session ends, where
+    /// the default would end it after twelve hours.
+    #[must_use]
+    pub fn no_expiry(mut self) -> Self {
+        self.expires = false;
         self
     }
 
@@ -532,6 +566,11 @@ impl Builder {
 
     /// Whether `Sec-Fetch-Site: same-site` (a sibling subdomain) passes
     /// layer 1 (default `false`).
+    ///
+    /// Turning it on trusts every subdomain of your registrable domain,
+    /// including one an attacker takes over (a dangling DNS record, a
+    /// forgotten staging host, user-content hosting). Prefer listing the
+    /// sibling origins you mean with [`allow_origin`](Self::allow_origin).
     #[must_use]
     pub fn allow_same_site(mut self, allow: bool) -> Self {
         self.policy.set_allow_same_site(allow);
@@ -560,10 +599,13 @@ impl Builder {
         if skew > lifetime {
             return Err(Error::InvalidSkew);
         }
+        // Without expiry the lifetime is only the rotation grace, so it does
+        // not cap the one-time lifetime.
+        let once_cap = if self.expires { lifetime } else { u32::MAX };
         let once = match self.once_lifetime {
-            None => lifetime.min(DEFAULT_ONCE_LIFETIME.as_secs() as u32),
+            None => once_cap.min(DEFAULT_ONCE_LIFETIME.as_secs() as u32),
             Some(d) => match u32::try_from(d.as_secs()) {
-                Ok(secs) if secs != 0 && secs <= lifetime => secs,
+                Ok(secs) if secs != 0 && secs <= once_cap => secs,
                 _ => return Err(Error::InvalidLifetime),
             },
         };
@@ -585,10 +627,15 @@ impl Builder {
         }
         Ok(Csrf {
             ring: Ring::new(slots)?,
-            window: Window { lifetime, skew },
+            window: Window {
+                lifetime,
+                skew,
+                expires: self.expires,
+            },
             once_window: Window {
                 lifetime: once,
                 skew,
+                expires: true,
             },
             mode: self.mode,
             policy: self.policy,
@@ -602,6 +649,7 @@ impl fmt::Debug for Builder {
         f.debug_struct("Builder")
             .field("keys", &keys)
             .field("lifetime", &self.lifetime)
+            .field("expires", &self.expires)
             .field("skew", &self.skew)
             .field("mode", &self.mode)
             .finish_non_exhaustive()

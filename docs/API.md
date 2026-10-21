@@ -16,7 +16,7 @@
 
 A task-oriented tour of the API, Tier 1 first. The rustdoc on [docs.rs](https://docs.rs/csrf-sec) is the item-by-item reference. Every `rust` example in this file is compiled and run as a doctest, so it matches the build; lines starting with `#` are setup hidden in rustdoc.
 
-> **Status: `1.0.0`, stable.** The API on this page is frozen until `2.0` (additions only), and the token format is frozen for every 1.x release; the stability terms are in the README. Every cost below is a measurement from [`PERFORMANCE.md`](./PERFORMANCE.md) (Linux, Ryzen 9 9950X3D) unless marked as an estimate.
+> **Status: `0.9.1`, release candidate.** The API on this page is the 1.0 candidate; `1.0` will freeze it (additions only until `2.0`) and the token format, on the terms in the README. Every cost below is a measurement from [`PERFORMANCE.md`](./PERFORMANCE.md) (Linux, Ryzen 9 9950X3D) unless marked as an estimate.
 
 - [Setup](#setup)
 - [Tier 1: three calls](#tier-1-three-calls)
@@ -42,7 +42,7 @@ A task-oriented tour of the API, Tier 1 first. The rustdoc on [docs.rs](https://
 
 ```toml
 [dependencies]
-csrf-sec = "1"
+csrf-sec = "0.9"
 ```
 
 `csrf-sec` has one job: decide whether a state-changing request came from your own page, for this session.
@@ -277,6 +277,7 @@ impl Csrf {
     pub fn key_fingerprint(&self, id: KeyId) -> Option<KeyFingerprint>;
     pub fn mode(&self) -> Mode;
     pub fn lifetime(&self) -> Duration;
+    pub fn expires(&self) -> bool;                                                     // false after no_expiry
     pub fn once_lifetime(&self) -> Duration;
     pub fn skew(&self) -> Duration;
 }
@@ -286,11 +287,12 @@ impl Builder {
     pub fn accept(self, id: KeyId, key: [u8; 32]) -> Self;                  // verifies only
     pub fn retired(self, id: KeyId, key: [u8; 32], retire_at: u64) -> Self; // verifies while now < retire_at (unix seconds)
     pub fn lifetime(self, lifetime: Duration) -> Self;                      // default 12 hours
-    pub fn once_lifetime(self, lifetime: Duration) -> Self;                 // default 1 hour, at most the lifetime
+    pub fn no_expiry(self) -> Self;                                         // tokens live as long as their session
+    pub fn once_lifetime(self, lifetime: Duration) -> Self;                 // default 1 hour, at most the lifetime (unless no_expiry)
     pub fn skew(self, skew: Duration) -> Self;                              // default 60 seconds
     pub fn mode(self, mode: Mode) -> Self;                                  // default Strict
     pub fn allow_origin(self, origin: &str) -> Self;
-    pub fn allow_same_site(self, allow: bool) -> Self;                      // default false
+    pub fn allow_same_site(self, allow: bool) -> Self;                      // default false; trusts every subdomain
     pub fn build(self) -> Result<Csrf, Error>;
 }
 ```
@@ -316,6 +318,19 @@ let csrf = Csrf::builder()
 # }
 ```
 
+- **Expiry is a choice.** By default a token expires twelve hours after it is issued (`lifetime`), which caps how long a leaked token is any use. `no_expiry()` makes a token live as long as the session id it is bound to, the per-session token OWASP describes: your session layer ends it, by rotating the session id at login and ending the session at logout. The issue time is still checked against the skew, a rotated-out key still stops verifying one `lifetime` plus skew after rotation, and one-time tokens always expire. The trade-off is that a token that leaks stays usable for the rest of its session.
+
+  ```rust
+  # use csrf_sec::{Csrf, KeyId};
+  # fn main() -> Result<(), csrf_sec::Error> {
+  let csrf = Csrf::builder()
+      .key(KeyId(0), *b"an example key, 32 bytes long!!!")
+      .no_expiry()
+      .build()?;
+  assert!(!csrf.expires());
+  # Ok(())
+  # }
+  ```
 - **Keys are 32 bytes and must be persisted** (or derived from a persisted master, for example a key-vault secret through HKDF). A key generated at boot makes every open form fail after a restart. Keys whose bytes are all equal (an unset buffer) are refused.
 - csrf-sec never MACs with your key directly: it derives one subkey per key id at construction, keeps only that, and wipes it when the `Csrf` is dropped. The key bytes handed to the builder are wiped when the builder is dropped, and the builder's key buffer is reserved for `MAX_KEYS` up front and never grows, so no reallocation leaves a heap copy behind. (Copies a move leaves on the stack, as with any Rust value, are out of reach of safe code.)
 - **Rotation on one node:** `csrf.rotated(KeyId(4), new_key)?` returns a new `Csrf` that signs with key 4 and keeps the old signing key as retired for one token lifetime plus skew from now, through the last second of the last token it could have signed. Swap it in; nobody is logged out and no open form fails. `rotated` reads the clock to set the retire time, and refuses with `Error::Clock` when the clock is outside 2020 to 2156; for an emergency rotation on a host whose clock is broken, build a new `Csrf` with the builder instead (`.key(new_id, new_key)`, leaving the compromised key out).
@@ -609,7 +624,7 @@ An adapter is the few lines that connect csrf-sec to your HTTP stack. `examples/
 | `Sec-Fetch-Site` | request header | raw value; absent means `""` |
 | `Origin` | request header | raw value; absent means `""` |
 | `Referer` | request header | raw value; only its origin is used |
-| own origin | your configuration | `https://example.com`; prefer configuration to rebuilding it from `Host`, which a proxy may rewrite |
+| own origin | your configuration | `https://example.com`; prefer configuration to rebuilding it from `Host`, which a proxy may rewrite. Never take it from `X-Forwarded-Host` or `Forwarded` unless every path to the app goes through a proxy that strips or overwrites the client's copy |
 | session id | your session layer | the guest session before login, the user session after |
 | token | the `FIELD_NAME` form field, or the `HEADER_NAME` header for `fetch` | absent means `""` (refused as `missing`) |
 
@@ -646,6 +661,10 @@ match csrf.check(&facts, session_id, form_field) {
 - Issue a new token after login (the session id changes), and pass the old session id as `previous_session` for the short window your session layer keeps it.
 - Pages that carry a token must never be stored in a shared cache: send `Cache-Control: private, no-store` (or at least `private`). A cached page served to someone else hands them a token for the first user's session.
 - Never put a token in a URL. Query strings end up in logs, browser history, and `Referer` headers.
+- If a response differs by `Sec-Fetch-Site` or `Origin` (a refusal, say, where the same URL otherwise succeeds), send `Vary: Sec-Fetch-Site, Origin` so no cache serves one variant for the other.
+- Trust forwarded headers (`X-Forwarded-Host`, `X-Forwarded-Proto`, `Forwarded`) only from a proxy that strips the client's copies, on every ingress path, including direct access to the app server. Better: configure the own origin.
+- Leave `allow_same_site` off unless you control every subdomain of the registrable domain; a subdomain taken over by an attacker is then same-site. List the sibling origins you mean with `allow_origin` instead.
+- Serve the site only over HTTPS, with HSTS, so no request (and no token) crosses the network in clear text.
 - Refuse with a generic 403. Keep the reason in your logs (`reason().as_str()`, `severity()`), never in the response.
 - Give the session cookie `SameSite=Lax` (or `Strict`), `Secure`, `HttpOnly`, and the `__Host-` prefix.
 - Share one `Csrf` per process (`Arc<Csrf>`). On rotation, build the new value and swap it in; requests in flight keep the one they started with.
@@ -720,7 +739,11 @@ Session ids are normally unique across tenants, which already keeps tokens apart
 
 ### Single-page applications
 
-Render the token into the page (`<meta name="csrf-token" content="...">`) and send it on every unsafe `fetch` in the `HEADER_NAME` header (`x-csrf-token`). The adapter reads the header instead of a form field; nothing else changes. Requests made with `fetch` carry `Sec-Fetch-Site` and `Origin` like forms do.
+Render the token into the page (`<meta name="csrf-token" content="...">`, through the template engine's attribute encoder) and send it in the `HEADER_NAME` header (`x-csrf-token`) on the unsafe requests your own application makes. The adapter reads the header instead of a form field; nothing else changes. Requests made with `fetch` carry `Sec-Fetch-Site` and `Origin` like forms do.
+
+Attach the token only to your own origin. Decide from the resolved request URL (`new URL(input, location.href).origin === location.origin`), not from the method or a base-URL prefix, and never by patching `fetch` or `XMLHttpRequest` globally: a token sent to a third-party API, or to an origin a permissive CORS policy lets read it, is a leaked token. Use your HTTP client's own CSRF support where it exists (Angular's `HttpClient` XSRF support, Axios's same-origin default), configured with the header name above.
+
+Tokens do not stop client-side CSRF: script on your own page that builds a request from attacker-controlled input (the URL fragment, `window.name`, `postMessage` data) sends your token with it. Never let such input choose the method, the endpoint, or the body of a state-changing request; map it to a fixed list of allowed actions instead.
 
 ### Logging and detection
 
@@ -763,7 +786,7 @@ Tokens are not compared to a cookie, so a tossed cookie cannot make a token from
 
 ## Token format
 
-Frozen for every 1.x release. Little-endian integers throughout.
+Unchanged since 0.4 (version 2 was added then); `1.0` freezes it for the 1.x line. Little-endian integers throughout.
 
 ```text
  raw session token (22 bytes):   version=1 (1) | key id (1) | issued at (4) | tag (16)

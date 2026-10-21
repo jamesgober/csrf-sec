@@ -199,18 +199,20 @@ impl From<Token> for alloc::string::String {
 pub(crate) struct Window {
     pub(crate) lifetime: u32,
     pub(crate) skew: u32,
+    /// `false`: tokens never expire on their own (`Builder::no_expiry`).
+    pub(crate) expires: bool,
 }
 
 impl Window {
-    /// Expired when `now > issued + lifetime`; not yet valid when
-    /// `issued > now + skew`.
+    /// Expired when `now > issued + lifetime` (only if tokens expire); not
+    /// yet valid when `issued > now + skew`.
     #[inline]
     fn check(self, issued_at: u32, now: u64) -> Result<(), Rejected> {
         let issued = EPOCH + u64::from(issued_at);
         if issued > now.saturating_add(u64::from(self.skew)) {
             return Err(Rejected::new(Reason::NotYetValid));
         }
-        if now > issued + u64::from(self.lifetime) {
+        if self.expires && now > issued + u64::from(self.lifetime) {
             return Err(Rejected::new(Reason::Expired));
         }
         Ok(())
@@ -547,6 +549,7 @@ mod tests {
         let w = Window {
             lifetime: 100,
             skew: 10,
+            expires: true,
         };
         let iat = 1_000u32;
         let issued = EPOCH + 1_000;
