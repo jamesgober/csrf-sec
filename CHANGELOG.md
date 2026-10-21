@@ -13,6 +13,37 @@
 
 ---
 
+## [0.6.0] - 2026-10-21
+
+Measured and tuned.
+
+### Added
+
+- `criterion` benchmark suite (`benches/csrf.rs`): issue, verify, check, the
+  request policy, every rejection, session id lengths, one-time tokens, pads,
+  and setup.
+- `dev/bench-compare`: the comparison with the `csrf` crate, outside the
+  published crate.
+- `docs/PERFORMANCE.md`: method, hardware, and every measured number.
+
+### Changed
+
+- The tag comparison is one 128-bit XOR, about 1 ns instead of 50 ns, still
+  constant time.
+- The base64url codec processes eight characters per 64-bit word for full
+  blocks, still without tables or branches on token bytes: decode 29 ns,
+  encode 20 ns.
+- Origin parsing is faster (a `Referer` match 51 to 23 ns), and a value
+  byte-identical to a well-formed `own_origin` needs one parse.
+- With `Sec-Fetch-Site: same-site` or `cross-site`, only the allowlist can pass
+  a request; the site's own origin no longer counts there. A cross-site refusal
+  takes 19 ns, and no parsing at all without an allowlist.
+- Every cost estimate in README, `docs/API.md`, and `dev/PLAN.md` is replaced
+  by a measurement: `issue_at` 112 ns, `verify_at` 110 ns, strict `check_at`
+  150 ns (Linux, Ryzen 9 9950X3D).
+
+---
+
 ## [0.5.0] - 2026-10-21
 
 Feature complete.
@@ -158,7 +189,8 @@ The scaffold and the plan. No functional code yet.
   keys and rotation, verdicts, threats T1-T15, architecture, ecosystem, open
   decisions, decision log), `dev/DIRECTIVES.md`, and `dev/ROADMAP.md`.
 
-[Unreleased]: https://github.com/jamesgober/csrf-sec/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/jamesgober/csrf-sec/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/jamesgober/csrf-sec/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/jamesgober/csrf-sec/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/jamesgober/csrf-sec/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/jamesgober/csrf-sec/compare/v0.2.0...v0.3.0

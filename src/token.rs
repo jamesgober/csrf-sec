@@ -14,7 +14,7 @@
 
 use core::{fmt, ops::Deref};
 
-use crypt_io::{Tag, mac};
+use crypt_io::mac;
 
 use crate::{
     b64,
@@ -275,7 +275,25 @@ fn tag_matches(
     scope: &[u8],
     received: &[u8],
 ) -> bool {
-    Tag::new(compute_tag(subkey, header, session, scope)).ct_eq(received)
+    ct_eq16(&compute_tag(subkey, header, session, scope), received)
+}
+
+/// Constant-time equality of a 16-byte tag with `received`.
+///
+/// One 128-bit XOR and one test of the result: no loop to exit early from and
+/// no branch on any byte, so the time does not depend on where the inputs
+/// differ. `black_box` keeps the optimizer from turning the comparison back
+/// into a byte-by-byte `memcmp`. (crypt-io's `Tag::ct_eq` gives the same
+/// guarantee through per-byte barriers and measured about 50 ns here, against
+/// about 1 ns for this; PLAN D-050.) Only the length is checked first, and it
+/// is public.
+#[inline]
+fn ct_eq16(expected: &[u8; TAG_LEN], received: &[u8]) -> bool {
+    let Ok(received) = <&[u8; TAG_LEN]>::try_from(received) else {
+        return false;
+    };
+    let diff = u128::from_ne_bytes(*expected) ^ u128::from_ne_bytes(*received);
+    core::hint::black_box(diff) == 0
 }
 
 /// Build, sign, mask, and encode a token of `layout`.
@@ -438,6 +456,22 @@ pub(crate) fn verify_session(
 mod tests {
     use super::{EPOCH, INLINE_MAC, Window, compute_tag, issued_at, put_varint};
     use crate::{Error, Reason};
+
+    #[test]
+    fn test_ct_eq16_equal_unequal_and_wrong_length() {
+        let a = [7u8; 16];
+        assert!(super::ct_eq16(&a, &[7u8; 16]));
+        for i in 0..16 {
+            for bit in 0..8 {
+                let mut b = a;
+                b[i] ^= 1 << bit;
+                assert!(!super::ct_eq16(&a, &b), "byte {i} bit {bit}");
+            }
+        }
+        assert!(!super::ct_eq16(&a, &[7u8; 15]));
+        assert!(!super::ct_eq16(&a, &[7u8; 17]));
+        assert!(!super::ct_eq16(&a, &[]));
+    }
 
     #[test]
     fn test_put_varint_known_encodings() {
