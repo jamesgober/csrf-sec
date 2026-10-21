@@ -67,8 +67,12 @@ Exit: the API holds up in a complete adapter and against real browsers; every mu
 - [x] Docs complete: the adapter guide in `docs/API.md` (values, checklist, caching, URLs); examples for each tier (`basic`, `rotation`, `tier3`, `server`).
 - [x] Mutation testing: every mutant caught; two real test gaps found and closed; CI on changed code, weekly full run (D-059, D-062).
 
-## v0.9.0 - Beta / release candidate
-- [ ] Adversarial review with every finding fixed test-first; long constant-time run; API frozen candidate.
+## v0.9.0 - Release candidate (DONE, 2026-10-21)
+Exit: an independent adversarial review with every finding fixed test-first; the long constant-time run passes; the API is the 1.0 candidate.
+- [x] Adversarial review: no forgery found; medium (one session filling the one-time store) and low findings fixed test-first (`tests/review.rs`, PLAN D-065 to D-074).
+- [x] One-time lifetime, per-session store quota, fail-closed time ranges, rotation boundary, malformed own origin and `Referer`.
+- [x] Documentation corrected where the review found it overstated.
+- [x] Long constant-time run (2,000,000 samples per class, \|t\| < 4.5).
 
 ## v1.0.0 - Stable
 - [ ] The full audit in `DIRECTIVES.md` section 3, item 10.

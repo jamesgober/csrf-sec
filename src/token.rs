@@ -32,6 +32,13 @@ pub const TOKEN_LEN: usize = 59;
 /// Unix time of the token epoch, 2020-01-01T00:00:00Z.
 pub(crate) const EPOCH: u64 = 1_577_836_800;
 
+/// The latest unix time any token can matter at: the last representable
+/// issue time plus the longest lifetime and skew. A time beyond it is not in
+/// seconds (milliseconds, say) and is treated as invalid, never as "far in the
+/// future".
+#[cfg(feature = "std")]
+pub(crate) const LATEST: u64 = EPOCH + 3 * u32::MAX as u64;
+
 /// Length of the MAC tag carried in a token.
 const TAG_LEN: usize = 16;
 
@@ -261,8 +268,11 @@ fn compute_tag(subkey: &[u8; 32], header: &[u8], session: &[u8], scope: &[u8]) -
         stream.update(&buf[..n]).update(session).update(scope);
         stream.finalize()
     };
+    let mut full = full;
     let mut tag = [0u8; TAG_LEN];
     tag.copy_from_slice(&full[..TAG_LEN]);
+    // The other half of the MAC output is never sent; do not leave it behind.
+    wipe(&mut full);
     tag
 }
 

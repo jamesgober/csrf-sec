@@ -378,7 +378,7 @@ fn t10_compromised_key_is_retired() {
     // And at the retire time, key 1 is gone everywhere.
     assert_eq!(
         rotated
-            .verify_at(&b, minted.as_bytes(), NOW + 630)
+            .verify_at(&b, minted.as_bytes(), NOW + 631)
             .unwrap_err()
             .reason(),
         Reason::UnknownKey

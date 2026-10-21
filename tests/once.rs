@@ -61,7 +61,7 @@ fn csrf() -> Csrf {
 }
 
 fn store() -> MemoryStore {
-    MemoryStore::starting_at(1000, NOW - 3600)
+    MemoryStore::starting_at(64_000, NOW - 3600)
 }
 
 #[test]

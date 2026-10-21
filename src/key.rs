@@ -213,7 +213,14 @@ impl Slot {
 
     /// Whether `other` holds the same key material, compared in constant time.
     pub(crate) fn same_key(&self, other: &Self) -> bool {
-        crypt_io::Tag::new(*self.session).ct_eq(other.session.as_slice())
+        // XOR-fold in registers: no copy of either subkey is left on the
+        // stack (crypt-io's `Tag` would copy one into an unwiped value).
+        let diff = self
+            .session
+            .iter()
+            .zip(other.session.iter())
+            .fold(0u8, |acc, (a, b)| acc | (a ^ b));
+        core::hint::black_box(diff) == 0
     }
 }
 
@@ -539,6 +546,21 @@ mod tests {
         );
         assert_eq!(a.info().role(), KeyRole::Signing);
         assert_eq!(a.info().id(), KeyId(1));
+    }
+
+    #[test]
+    fn test_same_key_differences_never_cancel() {
+        let mut a = Slot::derive(KeyId(1), KeyRole::Signing, &key(1)).unwrap();
+        let mut b = a.clone();
+        *a.session = [0u8; 32];
+        *b.session = [0u8; 32];
+        assert!(a.same_key(&b));
+        // Two bytes differing by the same bits must not cancel out.
+        b.session[1] = 1;
+        b.session[2] = 1;
+        assert!(!a.same_key(&b));
+        b.session[2] = 0;
+        assert!(!a.same_key(&b));
     }
 
     #[test]
