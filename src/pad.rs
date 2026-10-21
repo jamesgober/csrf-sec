@@ -11,7 +11,7 @@ use crate::error::Error;
 
 /// A source of cryptographically secure random bytes for token pads.
 ///
-/// Tier 1 and Tier 2 calls use [`OsPads`]. Implement this trait to supply
+/// Tier 1 and Tier 2 calls use `OsPads` (feature `std`). Implement this trait to supply
 /// randomness on targets without `std` (a hardware generator, an OS call), and
 /// pass it to [`Csrf::issue_at`](crate::Csrf::issue_at).
 ///

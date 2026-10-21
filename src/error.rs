@@ -36,7 +36,8 @@ pub enum Error {
     /// The ring would hold more than [`MAX_KEYS`](crate::MAX_KEYS) keys.
     /// Drop retired keys whose tokens have expired.
     TooManyKeys,
-    /// The lifetime is under one second or over `u32::MAX` seconds.
+    /// The lifetime is under one second or over `u32::MAX` seconds, or the
+    /// one-time lifetime is zero or longer than the lifetime.
     InvalidLifetime,
     /// The skew is longer than the lifetime.
     InvalidSkew,
@@ -78,9 +79,9 @@ impl fmt::Display for Error {
                 "more than {} keys in the ring; drop expired retired keys",
                 crate::MAX_KEYS
             ),
-            Self::InvalidLifetime => {
-                f.write_str("token lifetime must be at least 1 second and at most u32::MAX seconds")
-            }
+            Self::InvalidLifetime => f.write_str(
+                "token lifetime must be 1 second to u32::MAX seconds, and the one-time lifetime 1 second to the lifetime",
+            ),
             Self::InvalidSkew => f.write_str("clock skew must not be longer than the token lifetime"),
             Self::InvalidOrigin => f.write_str(
                 "allowed origin must be a serialized origin such as https://example.com, not null",

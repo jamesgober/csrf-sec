@@ -1,6 +1,8 @@
 //! Property tests for the invariants in `dev/DIRECTIVES.md` section 4.
 
-use csrf_sec::{Binding, Csrf, Error, KeyId, PadSource, Reason, RequestFacts};
+use csrf_sec::{
+    Binding, Csrf, Error, KeyId, NonceStore, NonceUse, PadSource, Reason, RequestFacts, StoreError,
+};
 use proptest::prelude::*;
 
 const NOW: u64 = 1_792_540_800;
@@ -28,6 +30,15 @@ fn csrf(key_byte: u8) -> Csrf {
 
 fn bytes(max: usize) -> impl Strategy<Value = Vec<u8>> {
     proptest::collection::vec(any::<u8>(), 0..=max)
+}
+
+/// A store that has never seen any nonce: isolates the token checks.
+struct Fresh;
+
+impl NonceStore for Fresh {
+    fn consume(&self, _: &NonceUse<'_>) -> Result<bool, StoreError> {
+        Ok(true)
+    }
 }
 
 proptest! {
@@ -64,6 +75,70 @@ proptest! {
         prop_assume!(forged[pos] != replacement);
         forged[pos] = replacement;
         prop_assert!(c.verify_at(&b, &forged, NOW).is_err());
+    }
+
+    /// Any change to any character of a one-time token makes it fail.
+    #[test]
+    fn prop_any_character_change_fails_one_time(
+        seed in any::<u64>(),
+        pos in 0usize..102,
+        replacement in any::<u8>(),
+    ) {
+        let c = csrf(6);
+        let b = Binding::new("s").scope("POST /pay").once(&Fresh);
+        let t = c.issue_at(&b, NOW, &mut SeedPads(seed)).unwrap();
+        prop_assert_eq!(t.as_str().len(), 102);
+        let mut forged = t.as_bytes().to_vec();
+        prop_assume!(forged[pos] != replacement);
+        forged[pos] = replacement;
+        prop_assert!(c.verify_at(&b, &forged, NOW).is_err());
+    }
+
+    /// A forged token is never reported as expired, not yet valid, stale, or
+    /// wrongly scoped, at any time: those reasons are decided only after the
+    /// MAC passed.
+    #[test]
+    fn prop_forgery_never_named_as_benign(
+        seed in any::<u64>(),
+        pos in 0usize..59,
+        replacement in any::<u8>(),
+        at in 0u64..4_000_000_000,
+    ) {
+        let c = csrf(7);
+        let b = Binding::new("s").scope("POST /x").previous_session("old");
+        let t = c.issue_at(&b, NOW, &mut SeedPads(seed)).unwrap();
+        let mut forged = t.as_bytes().to_vec();
+        prop_assume!(forged[pos] != replacement);
+        forged[pos] = replacement;
+        let r = c.verify_at(&b, &forged, 1_577_836_800 + at).unwrap_err().reason();
+        prop_assert!(
+            matches!(r, Reason::Malformed | Reason::UnknownKey | Reason::BadMac),
+            "{r:?}"
+        );
+    }
+
+    /// Only exactly `GET`, `HEAD`, and `OPTIONS` are safe: any other method,
+    /// in any case, is refused without a token.
+    #[test]
+    fn prop_every_other_method_is_unsafe(method in bytes(12)) {
+        let c = csrf(8);
+        let facts = RequestFacts::new(&method);
+        let safe = matches!(method.as_slice(), b"GET" | b"HEAD" | b"OPTIONS");
+        let verdict = c.check_at(&facts, &Binding::new("s"), b"", NOW);
+        prop_assert_eq!(verdict.is_ok(), safe);
+    }
+
+    /// `Origin: null` on an unsafe request is refused, whatever else is
+    /// configured, when Fetch Metadata is absent.
+    #[test]
+    fn prop_null_origin_refused(own in bytes(40), referer in bytes(60), allow in any::<bool>()) {
+        let mut builder = Csrf::builder().key(KeyId(0), *b"null-origin property key, 32 b!!");
+        if allow {
+            builder = builder.allow_origin("https://partner.example");
+        }
+        let c = builder.build().unwrap();
+        let facts = RequestFacts::new("POST").origin("null").referer(&referer).own_origin(&own);
+        prop_assert_eq!(c.policy(&facts).unwrap_err().reason(), Reason::OriginMismatch);
     }
 
     /// A token never verifies under another session id.

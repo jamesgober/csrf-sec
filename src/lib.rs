@@ -62,10 +62,12 @@
 //!
 //! ## Cost
 //!
-//! Issue and verify are each one keyed BLAKE3 compression, a fixed-length
-//! constant-time base64url pass, and a 16-byte constant-time compare: 112 ns
-//! and 110 ns (measured, Linux, Ryzen 9 9950X3D; the Tier 1 calls add a clock
-//! read), no allocation, no lock. The request policy is byte comparisons on
+//! Issue is one keyed BLAKE3 compression (while the session id and scope
+//! together fit in 56 bytes; longer inputs add a block per 64 bytes), a
+//! 22-byte pad, and a fixed-length constant-time base64url pass; verify is the
+//! same MAC and pass plus a 16-byte constant-time compare: 112 ns and 110 ns
+//! (measured, Linux, Ryzen 9 9950X3D; the Tier 1 calls add a clock read), no
+//! allocation, no lock. The request policy is byte comparisons on
 //! values the adapter already has: 1.3 ns on Fetch Metadata. Every number is
 //! in `docs/PERFORMANCE.md`.
 //!
@@ -127,6 +129,11 @@ pub const FIELD_NAME: &str = "csrf_token";
 /// Suggested name of the request header that carries the token (for
 /// `fetch` and XHR callers).
 pub const HEADER_NAME: &str = "x-csrf-token";
+
+/// Compiles and runs the Quick Start in `README.md`.
+#[cfg(all(doctest, feature = "std"))]
+#[doc = include_str!("../README.md")]
+struct Readme;
 
 /// Compiles and runs every `rust` example in `docs/API.md`, so the reference
 /// cannot drift from the build.

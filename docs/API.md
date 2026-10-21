@@ -16,7 +16,7 @@
 
 A task-oriented tour of the API, Tier 1 first. The rustdoc on [docs.rs](https://docs.rs/csrf-sec) is the item-by-item reference. Every `rust` example in this file is compiled and run as a doctest, so it matches the build; lines starting with `#` are setup hidden in rustdoc.
 
-> **Status: `0.9.0`, release candidate.** Feature complete, measured, hardened, reviewed against a complete adapter and real browsers, and through an independent adversarial review: every cost below is a measurement from [`PERFORMANCE.md`](./PERFORMANCE.md) (Linux, Ryzen 9 9950X3D) unless marked as an estimate.
+> **Status: `1.0.0`, stable.** The API on this page is frozen until `2.0` (additions only), and the token format is frozen for every 1.x release; the stability terms are in the README. Every cost below is a measurement from [`PERFORMANCE.md`](./PERFORMANCE.md) (Linux, Ryzen 9 9950X3D) unless marked as an estimate.
 
 - [Setup](#setup)
 - [Tier 1: three calls](#tier-1-three-calls)
@@ -42,7 +42,7 @@ A task-oriented tour of the API, Tier 1 first. The rustdoc on [docs.rs](https://
 
 ```toml
 [dependencies]
-csrf-sec = "0.9.0"
+csrf-sec = "1"
 ```
 
 `csrf-sec` has one job: decide whether a state-changing request came from your own page, for this session.
@@ -83,9 +83,9 @@ csrf.check(&facts, session_id, submitted)?;
 | `csrf.verify(session, token)` | `Verdict` = `Result<Verified, Rejected>` | 142 ns; no allocation, no lock |
 | `csrf.check(&facts, session, token)` | `Verdict` | 150 ns (`_at`, `Origin` + token); a cross-site refusal 23 ns |
 
-Tier 1 calls include a system clock read; the `_at` calls are about 30 ns faster (`verify_at` 110 ns, `issue_at` 112 ns). "No allocation" is also measured: a counting-allocator test (`tests/no_alloc.rs`) runs issue, verify, check, and every rejection path and asserts zero allocations, on Linux, macOS, and Windows.
+Tier 1 calls include a system clock read (and `issue` a pad from `OsPads`); the `_at` calls are 30 to 55 ns faster (`verify_at` 110 ns against 142 ns, `issue_at` 112 ns against 167 ns). "No allocation" is also measured: a counting-allocator test (`tests/no_alloc.rs`) runs issue, verify, check, and every rejection path and asserts zero allocations, on Linux, macOS, and Windows.
 
-`session` and `token` accept anything that is `AsRef<[u8]>`: `&str`, `String`, `&[u8]`, `Vec<u8>`, or a `&Token`. An empty token is reported as `Reason::Missing`; an empty session id can never pass (`Reason::Unverifiable`), because a token bound to nothing protects nothing.
+`session` and `token` accept anything that is `AsRef<[u8]>`: `&str`, `String`, `&[u8]`, `Vec<u8>`, or a `&Token`. An empty token is reported as `Reason::Missing`; an empty session id can never verify a token (`Reason::Unverifiable`), because a token bound to nothing protects nothing. (Safe methods, and `PolicyOnly` mode without a one-time binding, do not look at the session id.)
 
 `Csrf` is immutable, `Send + Sync`, and cheap to share behind an `Arc`. Nothing on the issue or verify path takes a lock or touches a shared counter.
 
@@ -244,7 +244,7 @@ assert_eq!(csrf.policy(&old_browser)?, OriginCheck::Origin);
 
 | `OriginCheck` | Meaning |
 |---|---|
-| `NotRun` | the policy was not run (token-only calls, `TokenOnly` mode) |
+| `NotRun` | the policy was not run (token-only calls, and unsafe requests in `TokenOnly` mode) |
 | `SafeMethod` | `GET`, `HEAD`, `OPTIONS`: nothing to check |
 | `FetchMetadata` | passed on `Sec-Fetch-Site` |
 | `Origin` | passed on the `Origin` header |
@@ -336,6 +336,26 @@ assert_eq!(csrf.signing_key(), KeyId(1));
 # }
 ```
 
+```rust,ignore
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum KeyRole { Signing, Accepted, Retired { until: u64 } }   // until: unix seconds, exclusive
+
+pub struct KeyInfo { /* private */ }                              // Clone, Copy, Debug, PartialEq, Eq, Hash
+impl KeyInfo {
+    pub const fn id(&self) -> KeyId;
+    pub const fn role(&self) -> KeyRole;
+    pub const fn fingerprint(&self) -> KeyFingerprint;
+}
+
+pub struct KeyFingerprint { /* private */ }                       // Clone, Copy, PartialEq, Eq, Hash; Display: 16 lowercase hex digits
+impl KeyFingerprint {
+    pub const fn as_bytes(&self) -> &[u8; 8];
+}
+
+pub struct KeyId(pub u8);                                         // Display: the number
+```
+
 **Inspecting the ring.** `keys()` lists every key (signing first) as a `KeyInfo`: its `id()`, its `role()` (`KeyRole::Signing`, `Accepted`, or `Retired { until }`), and a public `fingerprint()`. A `KeyFingerprint` is eight bytes of keyed BLAKE3 over a fixed label under the key's subkey: it reveals nothing about the key and cannot help forge a token, but two nodes holding the same key under the same id show the same fingerprint. Compare fingerprints across a cluster (`Display` is 16 hex digits) to catch a misdeployed ring before it shows up as a wave of `bad_mac` refusals.
 
 ```rust
@@ -364,7 +384,7 @@ use csrf_sec::{Binding, Csrf, MemoryStore, Reason};
 # let session_id = "session-1";
 
 let store = MemoryStore::new(100_000);      // at startup; shared by every request
-# // This test runs inside the store's first second, which MemoryStore refuses (see below).
+# // This test runs inside the store's first minute, which MemoryStore refuses (see below).
 # let store = MemoryStore::starting_at(100_000, 0);
 let pay = Binding::new(session_id).scope("POST /pay").once(&store);
 
@@ -416,11 +436,11 @@ impl MemoryStore {
 
 One-time tokens have their own lifetime: one hour by default (`Builder::once_lifetime`, never longer than the general lifetime), so their records, and anything an abuser can do with them, last an hour and a minute rather than twelve hours.
 
-**Nodes that share a store must use the same one-time lifetime.** The record's expiry is set by the node that consumed the token, from its own `once_lifetime`, and the token does not carry it. A node with a longer one-time lifetime would accept a token again after a shorter-lived node's record expired. Configure it once for the whole cluster, as you do the keys. To change it, switch every node at once, or accept that tokens used during the rollout may be presented once more to the nodes with the longer setting. **Upgrading a cluster from 0.8**, whose one-time tokens lived the whole lifetime: set `.once_lifetime(lifetime)` (12 hours by default) on the 0.9 nodes until no 0.8 node is left, then lower it everywhere at once.
+**Nodes that share a store must use the same one-time lifetime.** The record's expiry is set by the node that consumed the token, from its own `once_lifetime`, and the token does not carry it. A node with a longer one-time lifetime would accept a token again after a shorter-lived node's record expired. Configure it once for the whole cluster, as you do the keys. To change it, switch every node at once, or accept that tokens used during the rollout may be presented once more to the nodes with the longer setting. (Upgrading from 0.8: see the 0.9.0 entry in `CHANGELOG.md`.)
 
 The store contract: `consume` **atomically** records the nonce and returns `Ok(true)` only for its first use. `Ok(false)` (already recorded, or the store cannot vouch that it was not) refuses the request as `AlreadyUsed`; `Err(StoreError::SessionLimit)` refuses it as `TooManyUses`, and any other `Err` as `StoreUnavailable`. Two concurrent calls for one nonce must not both return `Ok(true)`: in a key-value store, set-if-absent with an expiry of `expires_at`.
 
-`MemoryStore` serves one node and tests: 64 shards, each behind its own short-held lock, with all of one session's records in one shard. **Each session may hold at most 64 records at once** (`with_session_limit`), so one session, even an attacker's, cannot fill the store for everyone else; a session at its limit is refused (`TooManyUses`) until its records expire. Each shard holds at most `capacity / 64` (rounded up) records, and a session at most an eighth of a shard whatever its limit (`session_limit()` reports the limit in force), so filling a shard always takes at least eight sessions: **size the store at 512 times the session limit or more** (32,768 records, about 2 MB, for the default). When a shard or a session is full, expired records are dropped first; if none has expired, the use is refused (`StoreUnavailable`) at once, without scanning, rather than forgetting a used token. A dropped record is remembered by its expiry: a later use expiring no later than a dropped record is refused as `AlreadyUsed`, which never refuses a valid token on a clock that only moves forward, and stops a used token from passing again on a node whose clock stepped back after the purge. About 60 bytes per record [est.].
+`MemoryStore` serves one node and tests: 64 shards, each behind its own short-held lock, with all of one session's records in one shard. **Each session may hold at most 64 records at once** (`with_session_limit`), so one session, even an attacker's, cannot fill the store for everyone else; a session at its limit is refused (`TooManyUses`) until its records expire. Each shard holds at most `capacity / 64` (rounded up) records, and a session at most an eighth of a shard whatever its limit, but always at least one record (`session_limit()` reports the limit in force), so in a store of 512 records or more filling a shard takes at least eight sessions: **size the store at 512 times the session limit or more** (32,768 records, about 2 MB, for the default). When a shard or a session is full, expired records are dropped first; if none has expired, the use is refused at once, without scanning, rather than forgetting a used token: a full session as `TooManyUses`, a full shard as `StoreUnavailable`. A dropped record is remembered by its expiry: a later use expiring no later than a dropped record is refused as `AlreadyUsed`, which never refuses a valid token on a clock that only moves forward, and stops a used token from passing again on a node whose clock stepped back after the purge. About 60 bytes per record [est.].
 
 The per-session limit raises the cost of filling the store; it does not remove it. Many sessions (guest sessions are cheap), each using its quota within the one-time lifetime, can still fill a store, after which one-time actions fail closed for everyone until records expire. The shard is chosen by a keyed hash, so an attacker cannot aim at one user's shard. Rate-limit the issuing of one-time tokens per client or account (a gate's job), and alert on `too_many_uses`. Its memory lives in this process only: so that a restart cannot let a used token pass again, it refuses every token issued at or before its start, and `MemoryStore::new` starts one minute ahead of the clock, which also covers a clock that steps back by up to a minute across the restart. A page rendered in the store's first minute must be reloaded. Where the clock can step back further, persist a high-water mark and use `starting_at`. For a cluster, implement `NonceStore` over a store every node reaches (WASP: the gates' session store).
 
@@ -449,7 +469,12 @@ pub trait PadSource {
     fn fill(&mut self, out: &mut [u8]) -> Result<(), Error>;
 }
 
+impl<P: PadSource + ?Sized> PadSource for &mut P { /* forwards */ }
+
 pub struct OsPads;      // feature `std`: per-thread buffer refilled in bulk from the OS CSPRNG
+impl OsPads {
+    pub fn refill() -> Result<(), Error>;   // discard this thread's buffered bytes and refill from the OS
+}
 
 impl Csrf {
     pub fn issue_at<P: PadSource + ?Sized>(&self, binding: &Binding<'_>, now: u64, pads: &mut P) -> Result<Token, Error>;
@@ -495,7 +520,9 @@ impl Rejected {
     pub const fn reason(&self) -> Reason;
     pub const fn severity(&self) -> u8;
 }
+impl From<Reason> for Rejected;     // so an adapter can refuse with its own reason: Err(Reason::Missing.into())
 // Display ("request forgery check failed: bad_mac"), core::error::Error.
+// Reason and StoreError implement Display (Reason prints as_str()); Builder implements Default.
 
 impl Reason {
     pub const fn severity(self) -> u8;
@@ -647,6 +674,30 @@ csrf.verify(&cookie_value, &token)?;
 # }
 ```
 
+### Try a stricter policy before enforcing it
+
+Build a second `Csrf` with the candidate settings (`Strict` instead of `TokenOnly`, a shorter allowlist) and the same keys, run it next to the enforcing one, and log where they disagree. Only the enforcing verdict decides the request.
+
+```rust
+use csrf_sec::{Binding, Csrf, KeyId, Mode, RequestFacts};
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
+# let key = *b"an example key, 32 bytes long!!!";
+let enforcing = Csrf::builder().key(KeyId(0), key).mode(Mode::TokenOnly).build()?;
+let candidate = Csrf::builder().key(KeyId(0), key).mode(Mode::Strict).build()?;
+
+# let token = enforcing.issue("session-1")?;
+let facts = RequestFacts::new("POST").origin("https://evil.example").own_origin("https://example.com");
+let binding = Binding::new("session-1");
+let verdict = enforcing.check_with(&facts, &binding, &token);
+let would_be = candidate.check_with(&facts, &binding, &token);
+if verdict.is_ok() != would_be.is_ok() {
+    // log: the candidate would refuse (or pass) this request, and why
+}
+assert!(verdict.is_ok() && would_be.is_err());
+# Ok(())
+# }
+```
+
 ### Revoke every token of a session without changing its id
 
 Bind to the session id plus a generation counter your session layer bumps on a password or privilege change. Every outstanding token of that session then fails as `BadMac`.
@@ -673,7 +724,7 @@ Render the token into the page (`<meta name="csrf-token" content="...">`) and se
 
 ### Logging and detection
 
-Log `reason().as_str()`, `severity()`, and `key_id()` on every refusal, never the token or the session id. A rising rate of `bad_mac`, `cross_site`, or `origin_mismatch` for one session is a strong sign of an active attack on that user; feed the reason and severity to your detection layer (sentinel-sec, bouncer-io). `stale_session` and `expired` are benign; `retired_key()` on a pass means a rotation is in progress.
+Log `reason().as_str()` and `severity()` on every refusal, and `key_id()` on passes, never the token or the session id. A rising rate of `bad_mac`, `cross_site`, or `origin_mismatch` for one session is a strong sign of an active attack on that user; feed the reason and severity to your detection layer (sentinel-sec, bouncer-io). `stale_session` and `expired` are benign; `retired_key()` on a pass means a rotation is in progress.
 
 ## Constants
 
@@ -712,7 +763,7 @@ Tokens are not compared to a cookie, so a tossed cookie cannot make a token from
 
 ## Token format
 
-Little-endian integers throughout.
+Frozen for every 1.x release. Little-endian integers throughout.
 
 ```text
  raw session token (22 bytes):   version=1 (1) | key id (1) | issued at (4) | tag (16)
