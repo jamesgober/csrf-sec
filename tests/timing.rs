@@ -140,7 +140,7 @@ fn measure(inputs: [&[u8]; 2], n: usize, seed: u64, run: &impl Fn(&[u8])) -> (f6
         rng ^= rng << 13;
         rng ^= rng >> 7;
         rng ^= rng << 17;
-        let class = (rng >> 32 & 1) as usize;
+        let class = ((rng >> 32) & 1) as usize;
         buf.0[..len].copy_from_slice(inputs[class]);
         let input = black_box(&buf.0[..len]);
         let start = Instant::now();
