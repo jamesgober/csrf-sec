@@ -3,12 +3,13 @@
 //!
 //! ```text
 //! raw session token (22 bytes):  version=1 | key id | issued at (u32 LE) | tag (16)
+//! raw one-time token (38 bytes): version=2 | key id | issued at | nonce (16) | tag (16)
 //! issued at:                     seconds since 2020-01-01T00:00:00Z
-//! MAC input:                     version | key id | issued at | varint(len session)
+//! MAC input:                     version | key id | issued at | [nonce] | varint(len session)
 //!                                | varint(len scope) | session | scope
 //! tag:                           first 16 bytes of keyed BLAKE3(subkey, MAC input)
-//! masked:                        pad (22) | raw XOR pad      pad: fresh CSPRNG bytes
-//! text:                          base64url, no padding        59 characters
+//! masked:                        pad (len raw) | raw XOR pad  pad: fresh CSPRNG bytes
+//! text:                          base64url, no padding        59 or 102 characters
 //! ```
 
 use core::{fmt, ops::Deref};
@@ -20,6 +21,7 @@ use crate::{
     binding::Binding,
     error::Error,
     key::{Kind, Ring, Role, Slot},
+    once::{NONCE_LEN, ONCE_TOKEN_LEN},
     pad::PadSource,
     verdict::{Reason, Rejected, Verdict, Verified},
 };
@@ -72,6 +74,14 @@ pub(crate) const SESSION: Layout = Layout {
     kind: Kind::Session,
 };
 
+/// One-time tokens (format version 2): a nonce follows the issued-at field.
+pub(crate) const ONCE: Layout = Layout {
+    version: 2,
+    raw: 22 + NONCE_LEN,
+    text: ONCE_TOKEN_LEN,
+    kind: Kind::Once,
+};
+
 /// A masked token, ready to put in a form field or a request header.
 ///
 /// Its text is base64url (`A-Z a-z 0-9 - _`), safe in HTML attributes,
@@ -118,7 +128,8 @@ impl Token {
         &self.buf[..usize::from(self.len)]
     }
 
-    /// Length of the text in characters ([`TOKEN_LEN`] for session tokens).
+    /// Length of the text in characters: [`TOKEN_LEN`] for session tokens,
+    /// [`ONCE_TOKEN_LEN`](crate::ONCE_TOKEN_LEN) for one-time tokens.
     #[must_use]
     #[inline]
     pub fn len(&self) -> usize {
@@ -315,9 +326,17 @@ pub(crate) fn issue<P: PadSource + ?Sized>(
 /// A token that decoded, unmasked, and passed its MAC.
 pub(crate) struct Opened<'r> {
     pub(crate) slot: &'r Slot,
+    raw: [u8; MAX_RAW],
 }
 
 impl Opened<'_> {
+    /// The nonce of a one-time token.
+    pub(crate) fn nonce(&self) -> [u8; NONCE_LEN] {
+        let mut nonce = [0u8; NONCE_LEN];
+        nonce.copy_from_slice(&self.raw[6..6 + NONCE_LEN]);
+        nonce
+    }
+
     /// The pass this token earns.
     pub(crate) fn verified(&self) -> Verified {
         Verified::token(self.slot.id, matches!(self.slot.role, Role::Retired { .. }))
@@ -372,7 +391,7 @@ pub(crate) fn open<'r>(
 
     let issued_at = u32::from_le_bytes([raw[2], raw[3], raw[4], raw[5]]);
     window.check(issued_at, now)?;
-    Ok(Opened { slot })
+    Ok(Opened { slot, raw })
 }
 
 /// Name a MAC failure accurately. Only runs on the failure path, and adds at

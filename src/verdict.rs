@@ -56,6 +56,10 @@ pub enum Reason {
     /// The check cannot run: no session id was given, or `PolicyOnly` mode
     /// got a request without Fetch Metadata.
     Unverifiable,
+    /// A one-time token was presented again, or its record expired.
+    AlreadyUsed,
+    /// The one-time token store could not answer.
+    StoreUnavailable,
 }
 
 impl Reason {
@@ -66,18 +70,22 @@ impl Reason {
     /// |---|---|
     /// | `BadMac` | 40 |
     /// | `CrossSite`, `OriginMismatch` | 30 |
-    /// | `WrongScope` | 20 |
+    /// | `WrongScope`, `AlreadyUsed` | 20 |
     /// | `Malformed` | 10 |
-    /// | `Missing`, `UnknownKey`, `NotYetValid`, `Unverifiable` | 5 |
+    /// | `Missing`, `UnknownKey`, `NotYetValid`, `Unverifiable`, `StoreUnavailable` | 5 |
     /// | `StaleSession`, `Expired` | 1 |
     #[must_use]
     pub const fn severity(self) -> u8 {
         match self {
             Self::BadMac => 40,
             Self::CrossSite | Self::OriginMismatch => 30,
-            Self::WrongScope => 20,
+            Self::WrongScope | Self::AlreadyUsed => 20,
             Self::Malformed => 10,
-            Self::Missing | Self::UnknownKey | Self::NotYetValid | Self::Unverifiable => 5,
+            Self::Missing
+            | Self::UnknownKey
+            | Self::NotYetValid
+            | Self::Unverifiable
+            | Self::StoreUnavailable => 5,
             Self::StaleSession | Self::Expired => 1,
         }
     }
@@ -97,6 +105,8 @@ impl Reason {
             Self::CrossSite => "cross_site",
             Self::OriginMismatch => "origin_mismatch",
             Self::Unverifiable => "unverifiable",
+            Self::AlreadyUsed => "already_used",
+            Self::StoreUnavailable => "store_unavailable",
         }
     }
 }
@@ -260,7 +270,7 @@ mod tests {
     use super::{OriginCheck, Reason, Rejected, Verified};
     use crate::KeyId;
 
-    const ALL: [Reason; 11] = [
+    const ALL: [Reason; 13] = [
         Reason::Missing,
         Reason::Malformed,
         Reason::UnknownKey,
@@ -272,11 +282,13 @@ mod tests {
         Reason::CrossSite,
         Reason::OriginMismatch,
         Reason::Unverifiable,
+        Reason::AlreadyUsed,
+        Reason::StoreUnavailable,
     ];
 
     #[test]
     fn test_reason_severity_matches_plan_table() {
-        let expected = [5, 10, 5, 40, 1, 1, 5, 20, 30, 30, 5];
+        let expected = [5, 10, 5, 40, 1, 1, 5, 20, 30, 30, 5, 20, 5];
         for (r, s) in ALL.iter().zip(expected) {
             assert_eq!(r.severity(), s, "{r:?}");
         }

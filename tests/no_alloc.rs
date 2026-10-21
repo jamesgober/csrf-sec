@@ -9,7 +9,9 @@ use std::{
     cell::Cell,
 };
 
-use csrf_sec::{Binding, Csrf, Error, KeyId, PadSource, RequestFacts};
+use std::sync::Mutex;
+
+use csrf_sec::{Binding, Csrf, Error, KeyId, NonceStore, PadSource, RequestFacts, StoreError};
 
 struct Counting;
 
@@ -61,6 +63,30 @@ impl PadSource for FixedPads {
 
 const NOW: u64 = 1_792_540_800;
 
+/// A fixed-capacity store that never allocates.
+struct ArrayStore(Mutex<[Option<[u8; 16]>; 8]>);
+
+impl NonceStore for ArrayStore {
+    fn insert(&self, _: &[u8], nonce: &[u8; 16], _: u64, _: u64) -> Result<(), StoreError> {
+        let mut slots = self.0.lock().map_err(|_| StoreError::Unavailable)?;
+        let free = slots
+            .iter_mut()
+            .find(|s| s.is_none())
+            .ok_or(StoreError::Full)?;
+        *free = Some(*nonce);
+        Ok(())
+    }
+
+    fn take(&self, _: &[u8], nonce: &[u8; 16], _: u64) -> Result<bool, StoreError> {
+        let mut slots = self.0.lock().map_err(|_| StoreError::Unavailable)?;
+        Ok(slots
+            .iter_mut()
+            .find(|s| s.as_ref() == Some(nonce))
+            .map(|s| *s = None)
+            .is_some())
+    }
+}
+
 #[test]
 fn test_hot_paths_allocate_nothing() {
     let csrf = Csrf::builder()
@@ -106,6 +132,15 @@ fn test_hot_paths_allocate_nothing() {
         );
     });
     assert_eq!(n, 0, "check_at, pass and refuse");
+
+    let store = ArrayStore(Mutex::new([None; 8]));
+    let once = Binding::new(session).scope("POST /pay").once(&store);
+    let n = allocations_during(|| {
+        let t = csrf.issue_at(&once, NOW, &mut FixedPads).unwrap();
+        assert!(csrf.verify_at(&once, t.as_bytes(), NOW).is_ok());
+        assert!(csrf.verify_at(&once, t.as_bytes(), NOW).is_err());
+    });
+    assert_eq!(n, 0, "one-time issue, verify, reuse");
 
     let n = allocations_during(|| {
         // Failure paths, including the extra MACs that name the reason.

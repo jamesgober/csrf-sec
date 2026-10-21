@@ -13,6 +13,36 @@
 
 ---
 
+## [0.4.0] - 2026-10-21
+
+One-time tokens.
+
+### Added
+
+- `Binding::once(&store)` makes a token one-time: format version 2, a 128-bit
+  nonce inside the MAC, its own subkey, 102 characters (`ONCE_TOKEN_LEN`).
+  The MAC, validity window, and scope are checked before the store is
+  touched, so forged requests never reach it.
+- `NonceStore` trait (`insert`, atomic `take`) and `StoreError`; `MemoryStore`
+  (feature `std`): 64 shards, bounded, expiring, refuses when full.
+- `Reason::AlreadyUsed` (severity 20), `Reason::StoreUnavailable` (5), and
+  `Error::Store`; store failures fail closed.
+- `NONCE_LEN` constant.
+- Tests: single use, independence of many tokens, a spy store proving forged
+  and mismatched tokens never reach `take`, fail-closed store errors, a full
+  store refusing to issue, exactly one winner among concurrent verifies,
+  every mode, rotation, zero allocation on the one-time path, and an
+  independent reimplementation of the version-2 format.
+
+### Changed
+
+- `NonceStore::insert` takes `now` as well as `expires_at` (design-lock
+  signature had only `expires_at`), so bounded stores can purge before
+  refusing.
+- In `PolicyOnly` mode, a one-time binding still checks the token.
+
+---
+
 ## [0.3.0] - 2026-10-21
 
 The core. Session tokens, the request origin policy, modes, the builder, key
@@ -97,7 +127,8 @@ The scaffold and the plan. No functional code yet.
   keys and rotation, verdicts, threats T1-T15, architecture, ecosystem, open
   decisions, decision log), `dev/DIRECTIVES.md`, and `dev/ROADMAP.md`.
 
-[Unreleased]: https://github.com/jamesgober/csrf-sec/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/jamesgober/csrf-sec/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/jamesgober/csrf-sec/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/jamesgober/csrf-sec/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/jamesgober/csrf-sec/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/jamesgober/csrf-sec/releases/tag/v0.1.0
