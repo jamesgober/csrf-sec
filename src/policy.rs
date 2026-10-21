@@ -8,8 +8,8 @@
 //! ```text
 //! safe method                                   -> pass (no token needed)
 //! Sec-Fetch-Site: same-origin | none            -> pass
-//! Sec-Fetch-Site: same-site                     -> pass if allow_same_site or Origin allowed; else CrossSite
-//! Sec-Fetch-Site: cross-site                    -> pass if Origin allowed; else CrossSite
+//! Sec-Fetch-Site: same-site                     -> pass if allow_same_site or Origin allowlisted; else CrossSite
+//! Sec-Fetch-Site: cross-site                    -> pass if Origin allowlisted; else CrossSite
 //! no Fetch Metadata, Origin present             -> allowed: pass; "null" or other: OriginMismatch
 //! no Fetch Metadata, no Origin, Referer present -> origin allowed: pass; else OriginMismatch
 //! nothing at all                                -> no facts: the token decides
@@ -224,15 +224,22 @@ pub enum Mode {
     PolicyOnly,
 }
 
-/// A parsed origin: scheme and host as given, and the effective port.
+/// A parsed origin: scheme and host as given, the effective port, and the
+/// length of the serialized origin it was parsed from.
 #[derive(Clone, Copy)]
 struct OriginRef<'v> {
     scheme: &'v [u8],
     host: &'v [u8],
     port: Option<u16>,
+    len: usize,
 }
 
 impl OriginRef<'_> {
+    /// Length of the serialized origin (`scheme://host[:port]`) in the input.
+    fn len(&self) -> usize {
+        self.len
+    }
+
     fn eq(&self, other: &OriginRef<'_>) -> bool {
         self.port == other.port
             && self.scheme.eq_ignore_ascii_case(other.scheme)
@@ -251,20 +258,67 @@ fn default_port(scheme: &[u8]) -> Option<u16> {
     }
 }
 
+/// A set of ASCII bytes as a 128-bit mask.
+const fn byte_set(ranges: &[(u8, u8)]) -> u128 {
+    let mut set = 0u128;
+    let mut i = 0;
+    while i < ranges.len() {
+        let (lo, hi) = ranges[i];
+        let mut c = lo;
+        while c <= hi {
+            set |= 1 << c;
+            c += 1;
+        }
+        i += 1;
+    }
+    set
+}
+
+/// Letters, digits, `+`, `-`, `.`: a scheme after its first letter (RFC 3986).
+const SCHEME: u128 = byte_set(&[
+    (b'a', b'z'),
+    (b'A', b'Z'),
+    (b'0', b'9'),
+    (b'+', b'+'),
+    (b'-', b'.'),
+]);
+/// Letters, digits, `-`, `.`, `_`: a registered host name as browsers
+/// serialize it (internationalized names arrive as punycode).
+const HOST: u128 = byte_set(&[
+    (b'a', b'z'),
+    (b'A', b'Z'),
+    (b'0', b'9'),
+    (b'-', b'.'),
+    (b'_', b'_'),
+]);
+/// Hex digits, `:`, `.`: the inside of a bracketed IPv6 literal.
+const IPV6: u128 = byte_set(&[(b'0', b':'), (b'a', b'f'), (b'A', b'F'), (b'.', b'.')]);
+
+/// Whether every byte of `v` is in `set`. Origins are public values, so a
+/// mask lookup is fine here (nothing secret is indexed).
+#[inline]
+fn all_in(set: u128, v: &[u8]) -> bool {
+    v.iter().all(|&c| c < 128 && (set >> c) & 1 == 1)
+}
+
+/// Split `scheme://rest` at its first `:`, which must be followed by `//`.
+/// A scheme cannot contain `:`, so the first one ends it.
+#[inline]
+fn split_scheme(v: &[u8]) -> Option<(&[u8], &[u8])> {
+    let colon = v.iter().position(|&c| c == b':')?;
+    let rest = v[colon + 1..].strip_prefix(b"//")?;
+    Some((&v[..colon], rest))
+}
+
 /// Parse a serialized origin (`scheme://host[:port]`). Anything else,
 /// including `null`, a path, user information, or non-ASCII bytes, is `None`.
 fn parse_origin(v: &[u8]) -> Option<OriginRef<'_>> {
     if v.len() > MAX_HEADER {
         return None;
     }
-    let sep = v.windows(3).position(|w| w == b"://")?;
-    let (scheme, authority) = (&v[..sep], &v[sep + 3..]);
+    let (scheme, authority) = split_scheme(v)?;
     let (first, rest) = scheme.split_first()?;
-    if !first.is_ascii_alphabetic()
-        || !rest
-            .iter()
-            .all(|&c| c.is_ascii_alphanumeric() || matches!(c, b'+' | b'-' | b'.'))
-    {
+    if !first.is_ascii_alphabetic() || !all_in(SCHEME, rest) {
         return None;
     }
     let (host, explicit) = split_host_port(authority)?;
@@ -272,7 +326,12 @@ fn parse_origin(v: &[u8]) -> Option<OriginRef<'_>> {
         Some(p) => Some(p),
         None => default_port(scheme),
     };
-    Some(OriginRef { scheme, host, port })
+    Some(OriginRef {
+        scheme,
+        host,
+        port,
+        len: v.len(),
+    })
 }
 
 /// Split an authority with no user information into host and explicit port.
@@ -280,11 +339,7 @@ fn split_host_port(authority: &[u8]) -> Option<(&[u8], Option<u16>)> {
     let (host, port) = if authority.first() == Some(&b'[') {
         let close = authority.iter().position(|&c| c == b']')?;
         let inner = &authority[1..close];
-        if inner.is_empty()
-            || !inner
-                .iter()
-                .all(|&c| c.is_ascii_hexdigit() || c == b':' || c == b'.')
-        {
+        if inner.is_empty() || !all_in(IPV6, inner) {
             return None;
         }
         match &authority[close + 1..] {
@@ -301,11 +356,7 @@ fn split_host_port(authority: &[u8]) -> Option<(&[u8], Option<u16>)> {
     if host.is_empty() {
         return None;
     }
-    if host.first() != Some(&b'[')
-        && !host
-            .iter()
-            .all(|&c| c.is_ascii_alphanumeric() || matches!(c, b'-' | b'.' | b'_'))
-    {
+    if host.first() != Some(&b'[') && !all_in(HOST, host) {
         return None;
     }
     let port = match port {
@@ -332,17 +383,15 @@ fn referer_origin(v: &[u8]) -> Option<OriginRef<'_>> {
     if v.len() > MAX_HEADER {
         return None;
     }
-    let sep = v.windows(3).position(|w| w == b"://")?;
-    let after = &v[sep + 3..];
+    let (scheme, after) = split_scheme(v)?;
     let end = after
         .iter()
         .position(|&c| matches!(c, b'/' | b'?' | b'#'))
         .unwrap_or(after.len());
-    let authority = &after[..end];
-    if authority.contains(&b'@') {
+    if after[..end].contains(&b'@') {
         return None;
     }
-    parse_origin(&v[..sep + 3 + end])
+    parse_origin(&v[..scheme.len() + 3 + end])
 }
 
 /// An allowed origin, stored normalized: lowercase scheme and host, effective
@@ -360,6 +409,7 @@ impl Allowed {
             scheme: &self.scheme,
             host: &self.host,
             port: self.port,
+            len: 0,
         }
     }
 }
@@ -397,9 +447,19 @@ impl Policy {
         self.allow_same_site = allow;
     }
 
-    /// Whether `origin` matches this site or an allowed origin. `None` when
-    /// there is nothing to compare against (no own origin, no allowlist).
-    fn allows(&self, origin: Option<OriginRef<'_>>, own: Option<&[u8]>) -> Option<bool> {
+    /// Whether `origin` (raw bytes and their parse) matches this site or an
+    /// allowed origin. `None` when there is nothing to compare against (no own
+    /// origin, no allowlist).
+    fn allows(
+        &self,
+        raw: &[u8],
+        origin: Option<OriginRef<'_>>,
+        own: Option<&[u8]>,
+    ) -> Option<bool> {
+        // Fast path: byte-identical to this site's own origin, and well formed.
+        if origin.is_some() && own == Some(raw) {
+            return Some(true);
+        }
         let own = own.and_then(parse_origin);
         if own.is_none() && self.allowed.is_empty() {
             return None;
@@ -419,24 +479,26 @@ impl Policy {
         if facts.method == MethodClass::Safe {
             return Ok(OriginCheck::SafeMethod);
         }
-        let origin = facts.origin.map(parse_origin);
-        let origin_allowed = || match origin {
-            Some(parsed) => self.allows(parsed, facts.own_origin) == Some(true),
-            None => false,
-        };
         match facts.fetch_site {
             Some(FetchSite::SameOrigin | FetchSite::None) => Ok(OriginCheck::FetchMetadata),
             Some(FetchSite::SameSite) if self.allow_same_site => Ok(OriginCheck::FetchMetadata),
             Some(FetchSite::SameSite | FetchSite::CrossSite) => {
-                if origin_allowed() {
+                // The browser says another site sent it, so only the allowlist
+                // can pass it; with no allowlist there is nothing to parse.
+                let allowed = !self.allowed.is_empty()
+                    && facts
+                        .origin
+                        .and_then(parse_origin)
+                        .is_some_and(|o| self.allowed.iter().any(|a| a.as_ref().eq(&o)));
+                if allowed {
                     Ok(OriginCheck::Origin)
                 } else {
                     Err(Rejected::new(Reason::CrossSite))
                 }
             }
             None => {
-                if let Some(parsed) = origin {
-                    match self.allows(parsed, facts.own_origin) {
+                if let Some((raw, parsed)) = facts.origin.map(|raw| (raw, parse_origin(raw))) {
+                    match self.allows(raw, parsed, facts.own_origin) {
                         Some(true) => Ok(OriginCheck::Origin),
                         Some(false) => Err(Rejected::new(Reason::OriginMismatch)),
                         // Nothing configured to compare with; "null" and
@@ -445,7 +507,9 @@ impl Policy {
                         None => Ok(OriginCheck::NoFacts),
                     }
                 } else if let Some(referer) = facts.referer {
-                    match self.allows(referer_origin(referer), facts.own_origin) {
+                    let parsed = referer_origin(referer);
+                    let raw = parsed.map_or(&[][..], |o| &referer[..o.len()]);
+                    match self.allows(raw, parsed, facts.own_origin) {
                         Some(true) => Ok(OriginCheck::Referer),
                         Some(false) => Err(Rejected::new(Reason::OriginMismatch)),
                         None => Ok(OriginCheck::NoFacts),
@@ -612,6 +676,50 @@ mod tests {
     }
 
     #[test]
+    fn test_byte_sets_match_their_definitions() {
+        use super::{HOST, IPV6, SCHEME, all_in};
+        for c in 0u8..=255 {
+            let one = [c];
+            assert_eq!(
+                all_in(SCHEME, &one),
+                c.is_ascii_alphanumeric() || matches!(c, b'+' | b'-' | b'.'),
+                "scheme {c:#04x}"
+            );
+            assert_eq!(
+                all_in(HOST, &one),
+                c.is_ascii_alphanumeric() || matches!(c, b'-' | b'.' | b'_'),
+                "host {c:#04x}"
+            );
+            assert_eq!(
+                all_in(IPV6, &one),
+                c.is_ascii_hexdigit() || matches!(c, b':' | b'.'),
+                "ipv6 {c:#04x}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_policy_own_origin_fast_path_requires_well_formed() {
+        let p = Policy::default();
+        let f = RequestFacts::new("POST")
+            .origin("https://example.com")
+            .own_origin("https://example.com");
+        assert_eq!(p.decide(&f), Ok(OriginCheck::Origin));
+        // Byte-identical but malformed on both sides never matches.
+        let f = RequestFacts::new("POST")
+            .origin("https://bad host")
+            .own_origin("https://bad host");
+        assert_eq!(p.decide(&f).unwrap_err().reason(), Reason::OriginMismatch);
+        let f = RequestFacts::new("POST").origin("null").own_origin("null");
+        assert_eq!(p.decide(&f).unwrap_err().reason(), Reason::OriginMismatch);
+        // A Referer whose origin part is byte-identical to the own origin.
+        let f = RequestFacts::new("POST")
+            .referer("https://example.com/path?q")
+            .own_origin("https://example.com");
+        assert_eq!(p.decide(&f), Ok(OriginCheck::Referer));
+    }
+
+    #[test]
     fn test_parse_port_bounds() {
         assert_eq!(parse_port(b"1"), Some(1));
         assert_eq!(parse_port(b"65535"), Some(65535));
@@ -725,6 +833,15 @@ mod tests {
             .origin("https://evil.example");
         assert_eq!(p.decide(&f).unwrap_err().reason(), Reason::CrossSite);
         let f = post().fetch_site("cross-site");
+        assert_eq!(p.decide(&f).unwrap_err().reason(), Reason::CrossSite);
+        // The site's own origin is not an allowlist entry: a request the
+        // browser calls cross-site cannot be vouched for by it.
+        let p = policy(&[], false);
+        let f = post()
+            .fetch_site("cross-site")
+            .origin("https://example.com");
+        assert_eq!(p.decide(&f).unwrap_err().reason(), Reason::CrossSite);
+        let f = post().fetch_site("same-site").origin("https://example.com");
         assert_eq!(p.decide(&f).unwrap_err().reason(), Reason::CrossSite);
     }
 

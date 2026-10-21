@@ -16,7 +16,7 @@
 
 A task-oriented tour of the API, Tier 1 first. The rustdoc on [docs.rs](https://docs.rs/csrf-sec) is the item-by-item reference. Every `rust` example in this file is compiled and run as a doctest, so it matches the build; lines starting with `#` are setup hidden in rustdoc.
 
-> **Status: `0.5.0`, feature complete.** Session tokens, one-time tokens, the request policy, modes, the builder, key rotation and ring introspection, and all three tiers are built; the core builds for bare-metal targets.
+> **Status: `0.6.0`.** Feature complete and measured: every cost below is a measurement from [`PERFORMANCE.md`](./PERFORMANCE.md) (Linux, Ryzen 9 9950X3D) unless marked as an estimate.
 
 - [Setup](#setup)
 - [Tier 1: three calls](#tier-1-three-calls)
@@ -41,7 +41,7 @@ A task-oriented tour of the API, Tier 1 first. The rustdoc on [docs.rs](https://
 
 ```toml
 [dependencies]
-csrf-sec = "0.5.0"
+csrf-sec = "0.6.0"
 ```
 
 `csrf-sec` has one job: decide whether a state-changing request came from your own page, for this session. It never parses HTTP. Your adapter (a framework middleware, web-net, a WASP service) hands it plain values: the session id, the submitted token, and the request's origin facts.
@@ -73,14 +73,14 @@ csrf.check(&facts, session_id, submitted)?;
 # }
 ```
 
-| Call | Returns | Cost [est.] |
+| Call | Returns | Cost (measured) |
 |---|---|---|
-| `Csrf::new(key)` | `Result<Csrf, Error>` | one keyed BLAKE3 per key, once |
-| `csrf.issue(session)` | `Result<Token, Error>` | ≤ 300 ns; no allocation |
-| `csrf.verify(session, token)` | `Verdict` = `Result<Verified, Rejected>` | ≤ 300 ns; no allocation, no lock |
-| `csrf.check(&facts, session, token)` | `Verdict` | ≤ 350 ns; no allocation, no lock |
+| `Csrf::new(key)` | `Result<Csrf, Error>` | 212 ns, once |
+| `csrf.issue(session)` | `Result<Token, Error>` | 167 ns; no allocation |
+| `csrf.verify(session, token)` | `Verdict` = `Result<Verified, Rejected>` | 142 ns; no allocation, no lock |
+| `csrf.check(&facts, session, token)` | `Verdict` | 150 ns (`_at`, `Origin` + token); a cross-site refusal 23 ns |
 
-Costs are estimates until the `0.6.0` benchmarks replace them with measurements. "No allocation" is measured: a counting-allocator test (`tests/no_alloc.rs`) runs issue, verify, check, and every rejection path and asserts zero allocations.
+Tier 1 calls include a system clock read; the `_at` calls are about 30 ns faster (`verify_at` 110 ns, `issue_at` 112 ns). "No allocation" is also measured: a counting-allocator test (`tests/no_alloc.rs`) runs issue, verify, check, and every rejection path and asserts zero allocations, on Linux, macOS, and Windows.
 
 `session` and `token` accept anything that is `AsRef<[u8]>`: `&str`, `String`, `&[u8]`, `Vec<u8>`, or a `&Token`. An empty token is reported as `Reason::Missing`; an empty session id can never pass (`Reason::Unverifiable`), because a token bound to nothing protects nothing.
 
@@ -172,7 +172,7 @@ impl Csrf {
   ```
 - **Once.** Makes the token one-time; see [One-time tokens](#one-time-tokens).
 
-Cost of a scope or previous session: only failing tokens pay for the extra MACs used to tell the reasons apart, at most two extra keyed BLAKE3 calls [est. ~60 ns each], so verify work stays fixed and bounded.
+Cost of a scope or previous session: only failing tokens pay for the extra MACs used to tell the reasons apart, at most two extra keyed BLAKE3 calls (measured: a `bad_mac` with both tried takes 193 ns against 116 ns), so verify work stays fixed and bounded.
 
 ## Request policy (layer 1)
 
@@ -210,14 +210,14 @@ The adapter fills only what the request carried. Values are raw header bytes; no
 ```text
  safe method                                   -> pass (no token needed)
  Sec-Fetch-Site: same-origin | none            -> pass
- Sec-Fetch-Site: same-site                     -> pass if allow_same_site, or Origin is allowed; else CrossSite
- Sec-Fetch-Site: cross-site                    -> pass if Origin is allowed; else CrossSite
+ Sec-Fetch-Site: same-site                     -> pass if allow_same_site, or Origin is allowlisted; else CrossSite
+ Sec-Fetch-Site: cross-site                    -> pass if Origin is allowlisted; else CrossSite
  no Fetch Metadata, Origin present             -> "null" or no match: OriginMismatch; match: pass
  no Fetch Metadata, no Origin, Referer present -> its origin matches: pass; else OriginMismatch
  nothing at all                                -> the token decides (Strict), Unverifiable (PolicyOnly)
 ```
 
-An origin is allowed when it equals `own_origin` or an origin added with `Builder::allow_origin`: scheme and host compared ASCII case-insensitively, default ports (`:80` for http and ws, `:443` for https and wss) normalized, anything that is not a well-formed serialized origin refused. A `Referer` with user information (`https://a@b/`) never matches. When nothing is configured to compare against (no `own_origin`, no allowlist), an `Origin` or `Referer` cannot be judged and the token decides, except that `null` and malformed values are still refused. Values longer than 4 KiB never match. Cost [est.]: ≤ 50 ns, no allocation.
+Without Fetch Metadata, an origin is allowed when it equals `own_origin` or an origin added with `Builder::allow_origin`. With `Sec-Fetch-Site: same-site` or `cross-site`, only the allowlist counts: the browser has already said another site sent the request, so the site's own origin cannot vouch for it (and with no allowlist the refusal needs no parsing at all). Origins compare scheme and host ASCII case-insensitively, with default ports (`:80` for http and ws, `:443` for https and wss) normalized, anything that is not a well-formed serialized origin refused. A `Referer` with user information (`https://a@b/`) never matches. When nothing is configured to compare against (no `own_origin`, no allowlist), an `Origin` or `Referer` cannot be judged and the token decides, except that `null` and malformed values are still refused. Values longer than 4 KiB never match. Cost (measured): 1.3 ns on `Sec-Fetch-Site`, 23 ns on a `Referer` match, 37 ns on an `Origin` match, 19 ns for a cross-site refusal; no allocation.
 
 ```rust
 # use csrf_sec::{Csrf, OriginCheck, Reason, RequestFacts};
@@ -405,7 +405,7 @@ impl MemoryStore {
 
 The store contract: `consume` **atomically** records the nonce and returns `Ok(true)` only for its first use. `Ok(false)` (already recorded, or the store cannot vouch that it was not) refuses the request as `AlreadyUsed`; `Err` refuses it as `StoreUnavailable`. Two concurrent calls for one nonce must not both return `Ok(true)`: in a key-value store, set-if-absent with an expiry of `expires_at`.
 
-`MemoryStore` serves one node and tests: 64 shards, each behind its own short-held lock; at most `capacity / 64` (rounded up) records per shard; a full shard drops expired records and otherwise refuses (`StoreUnavailable`) rather than forgetting a used token. About 40 bytes per record [est.]. Its memory lives in this process only, so that a restart cannot let a used token pass again it refuses every token issued at or before the second it started: a page rendered in the store's first second must be reloaded. For a cluster, implement `NonceStore` over a store every node reaches (WASP: the gates' session store).
+`MemoryStore` serves one node and tests: 64 shards, each behind its own short-held lock; at most `capacity / 64` (rounded up) records per shard; a full shard drops expired records and otherwise refuses (`StoreUnavailable`) rather than forgetting a used token. About 40 bytes per record [est.]; a one-time issue and verify through it takes 557 ns (measured). Its memory lives in this process only, so that a restart cannot let a used token pass again it refuses every token issued at or before the second it started: a page rendered in the store's first second must be reloaded. For a cluster, implement `NonceStore` over a store every node reaches (WASP: the gates' session store).
 
 ```rust
 use std::{collections::HashSet, sync::Mutex};
@@ -460,7 +460,7 @@ assert_eq!(refused.reason(), Reason::Expired);
 
 A `PadSource` must be a cryptographically secure generator. The pad travels with the token, but it must not be predictable before the response is built: a predictable pad lets a compression attack recover the token again. Tier 1 and Tier 2 use `OsPads` and the system clock.
 
-`OsPads` keeps a 2 KiB buffer per thread, refilled in bulk from the OS generator through `mod-rand` (about 90 pads per system call), takes no lock, and wipes the buffer when the thread exits. After a `fork` without `exec`, parent and child would share the unused part of the buffer; `OsPads::refill()` discards it.
+`OsPads` keeps a 2 KiB buffer per thread, refilled in bulk from the OS generator through `mod-rand` (about 90 pads per system call), takes no lock, and wipes the buffer when the thread exits. A 22-byte pad costs 28 ns on Linux (measured; the kernel generator's throughput is the floor) and about 8 ns on Windows. After a `fork` without `exec`, parent and child would share the unused part of the buffer; `OsPads::refill()` discards it.
 
 ## Verdicts and reasons
 

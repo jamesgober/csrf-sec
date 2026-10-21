@@ -62,10 +62,12 @@
 //!
 //! ## Cost
 //!
-//! Issue and verify are each one keyed BLAKE3 over about 60 bytes, a
-//! fixed-length constant-time base64url pass, and a 16-byte constant-time
-//! compare: a few hundred nanoseconds [est.], no allocation, no lock. The
-//! request policy is byte comparisons on values the adapter already has.
+//! Issue and verify are each one keyed BLAKE3 compression, a fixed-length
+//! constant-time base64url pass, and a 16-byte constant-time compare: 112 ns
+//! and 110 ns (measured, Linux, Ryzen 9 9950X3D; the Tier 1 calls add a clock
+//! read), no allocation, no lock. The request policy is byte comparisons on
+//! values the adapter already has: 1.3 ns on Fetch Metadata. Every number is
+//! in `docs/PERFORMANCE.md`.
 //!
 //! ## What it does not stop
 //!

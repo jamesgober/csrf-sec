@@ -4,7 +4,7 @@
 >
 > **Read order:** [`../REPS.md`](../REPS.md) &rarr; [`DIRECTIVES.md`](./DIRECTIVES.md) &rarr; **this file** &rarr; [`ROADMAP.md`](./ROADMAP.md).
 >
-> **Status:** `0.5.0`, feature complete: session tokens, one-time tokens, the request policy, modes, the builder, rotation, ring introspection, and all three tiers; the core builds for bare metal. Next: `0.6.0` optimization. The public surface is [`../docs/API.md`](../docs/API.md), compiled as a doctest.
+> **Status:** `0.6.0`, feature complete and measured ([`../docs/PERFORMANCE.md`](../docs/PERFORMANCE.md)). Next: `0.7.0` hardening. The public surface is [`../docs/API.md`](../docs/API.md), compiled as a doctest.
 
 ---
 
@@ -288,25 +288,25 @@ All public enums and structs that may grow are `#[non_exhaustive]`.
 
 ## 9. Threats
 
-| Id | Threat | Defence | Cost [est.] |
+| Id | Threat | Defence | Cost (measured unless marked) |
 |---|---|---|---|
-| T1 | classic CSRF: an attacker page auto-submits a form with the victim's cookies | policy check + session-bound token | ~0.3-0.5 µs per unsafe request |
+| T1 | classic CSRF: an attacker page auto-submits a form with the victim's cookies | policy check + session-bound token | 150 ns per unsafe request (`check_at`); a cross-site attempt is refused in 23 ns |
 | T2 | login CSRF: the victim is signed in to the attacker's account | token bound to the pre-session (WASP's lazy guest session) | same |
 | T3 | forced logout | token on logout | same |
-| T4 | token recovered from compressed responses (BREACH) | per-response masking | ~20 ns per issue |
+| T4 | token recovered from compressed responses (BREACH) | per-response masking | 28 ns per issue on Linux (the pad), plus the XOR |
 | T5 | token reused in another session | MAC binds the session id | none extra |
-| T6 | token reused for another action | optional scope binding | ~10 ns |
+| T6 | token reused for another action | optional scope binding | none while session id and scope fit one 64-byte block (56 bytes together); a second block adds about 65 ns |
 | T7 | cookie tossing from a subdomain defeats naive double-submit | tokens are signed and session-bound, not compared to a cookie; `__Host-` cookie guidance | none |
 | T8 | token forgery | 256-bit key, keyed BLAKE3, 128-bit tag | none extra |
 | T9 | timing attack on the comparison | constant-time tag comparison | none extra |
 | T10 | key compromise | key ids, rotation without logouts, short lifetimes, keys derived per purpose | rotation is operational |
-| T11 | denial of service through verification | length checked before decoding; fixed work; no allocation | bounded per request |
+| T11 | denial of service through verification | length checked before decoding; fixed work; no allocation | a wrong length is refused in 3.4 ns; garbage text in 35 ns; a forgery costs the same 116 ns as a valid token |
 | T12 | clocks differ between nodes | skew tolerance on issue time | none |
-| T13 | state change through a "safe" method (GET with side effects) | method classification; safe methods never pass as state-changing | ~1 ns |
-| T14 | `Origin: null` and stripped `Referer` | explicit policy for each case | ~1 ns |
-| T15 | cross-site top-level POST navigation | Fetch Metadata: `Sec-Fetch-Site: cross-site` on an unsafe method is refused | ~20 ns |
+| T13 | state change through a "safe" method (GET with side effects) | method classification; safe methods never pass as state-changing | part of building `RequestFacts`, 2.9 ns |
+| T14 | `Origin: null` and stripped `Referer` | explicit policy for each case | 37 ns or less (an `Origin` parse) |
+| T15 | cross-site top-level POST navigation | Fetch Metadata: `Sec-Fetch-Site: cross-site` on an unsafe method is refused | 19 ns with an allowlist to consult, about 2 ns [est.] without |
 
-Every cost is an estimate until `0.6.0` benchmarks replace it with a measurement.
+Measurements: [`docs/PERFORMANCE.md`](../docs/PERFORMANCE.md) (Linux, Ryzen 9 9950X3D, `0.6.0`).
 
 Out of scope, named so nobody assumes otherwise: cross-site scripting defeats every CSRF defence, because script on the page can read the token; that is stopped by output encoding and the content security policy (shield-sec, web-net). Clickjacking is stopped by frame options and CSP `frame-ancestors`.
 
@@ -337,14 +337,15 @@ src/
 
 ## 11. Performance, efficiency, and scale
 
-| Operation | Target [est.] | How |
-|---|---|---|
-| `issue` | ≤ 300 ns | keyed BLAKE3 over ~60 bytes, a 22-byte pad from a buffered CSPRNG, base64url into a stack buffer |
-| `verify` | ≤ 300 ns | fixed-length decode, one MAC, constant-time compare of 16 bytes |
-| layer 1 policy | ≤ 50 ns | byte comparisons on values the adapter already parsed |
-| allocations on verify | 0 | stack buffers only |
-| locks or shared atomics on verify | 0 | immutable `Csrf`, swapped by the application on rotation |
-| scale-out | linear | stateless; any node verifies any token with the same key ring |
+| Operation | Target | Measured (`0.6.0`) | How |
+|---|---|---|---|
+| `issue` | ≤ 300 ns | 112 ns (`issue_at`), 167 ns with clock and `OsPads` | keyed BLAKE3 over ~51 bytes (one block), a 22-byte pad from a buffered CSPRNG, SWAR base64url into an inline buffer |
+| `verify` | ≤ 300 ns | 110 ns (`verify_at`), 142 ns with clock | SWAR fixed-length decode, one MAC, a 128-bit XOR compare |
+| layer 1 policy | ≤ 50 ns | 1.3 ns (Fetch Metadata) to 37 ns (`Origin`) | byte comparisons on values the adapter already parsed |
+| allocations on verify | 0 | 0 | stack buffers only (counting-allocator test) |
+| locks or shared atomics on verify | 0 | 0 | immutable `Csrf`, swapped by the application on rotation |
+| scale-out | linear | linear | stateless; any node verifies any token with the same key ring |
+| against the best competitor | ≥ 20% faster | 3.2× faster issue, 3.1× faster verify (`csrf` 0.5 HMAC) | see `docs/PERFORMANCE.md` |
 
 - Pad randomness: a per-thread buffer filled in bulk from the OS CSPRNG (mod-rand), so a mask costs nanoseconds, not a system call.
 - Benchmarks (`criterion`) against the best existing Rust CSRF crates as dev-only comparisons. The target is at least 20% faster than the best competitor at equal or stronger security.
@@ -480,4 +481,10 @@ Outcomes so far: key fingerprints adopted (D-041); forgery-rate feedback adopted
 | D-047 | 2026-10-21 | Adopted as documentation: what to log on a refusal (`reason`, `severity`, `key_id`, never the token or session id) and how detection layers use reason rates | no state belongs in this crate; the verdict already carries everything a detection layer needs |
 | D-048 | 2026-10-21 | `KeyRole` is public and `#[non_exhaustive]` | `KeyInfo` reports it; new roles stay a non-breaking change |
 | D-049 | 2026-10-21 | CI builds the `no_std` core for `thumbv7em-none-eabi` on stable and 1.85, with and without `alloc` | a host build with `no_std` set can still link `std` through a dependency by accident; a target without `std` cannot |
+| D-050 | 2026-10-21 | The tag comparison is one 128-bit XOR tested once, behind `black_box`, instead of crypt-io's `Tag::ct_eq` | measured 50 ns for `Tag::ct_eq` (subtle's per-byte barriers) against about 1 ns; there is no loop to exit early and no branch on a byte, so the time does not depend on the data; the statistical timing test in `0.7.0` checks it. A faster `Tag::ct_eq` belongs in crypt-io as its own change |
+| D-051 | 2026-10-21 | The base64url codec handles full blocks eight lanes per `u64` (SWAR), with the one-character code for the tail; still no table and no branch on token bytes | decode 44 to 29 ns, encode to 20 ns (measured); every lane is tested against the scalar code for every byte value, and every intermediate lane value stays within 0 to 255, so lanes never carry into each other |
+| D-052 | 2026-10-21 | Benchmarks of record run on Linux; `dev/bench-compare` (outside the published crate) holds the competitor comparison | this machine's local Windows linker setup adds up to 60 ns to small `memcpy` calls; the comparison's third-party crates must never reach the published crate or its dependency audit |
+| D-053 | 2026-10-21 | With `Sec-Fetch-Site: same-site` or `cross-site`, only the allowlist can pass a request; the site's own origin no longer counts there | the browser has already said another site sent it, so the own origin cannot vouch for it; the attack path becomes the cheapest one (19 ns, and no parsing at all without an allowlist) |
+| D-054 | 2026-10-21 | Origin parsing splits the scheme at the first `:`, checks character classes with 128-bit sets, and passes a value byte-identical to a well-formed `own_origin` without a second parse | `Referer` match 51 to 23 ns; origins are public, so a bit-set lookup indexed by them leaks nothing |
+| D-055 | 2026-10-21 | Pads keep coming from the OS generator, even though a user-space generator seeded from it would cut `issue` by about 20 ns on Linux | the operating system's generator stays the only source of randomness in the crate; 28 ns is far inside the budget |
 | D-038 | 2026-10-21 | The nonce is drawn from the same `PadSource` as the pad, before it | one randomness seam for Tier 3 and `no_std`; the order is part of the documented format so the independent reimplementation test can rebuild a token exactly |

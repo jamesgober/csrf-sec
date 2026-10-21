@@ -45,12 +45,13 @@ Exit: every planned feature present and tested; the `no_std` core builds for a b
 - [x] README in full form; examples for each tier (`basic`, `rotation`, `tier3`).
 - [x] `Send + Sync` asserted for every public type.
 
-## v0.6.0 - Optimization
+## v0.6.0 - Optimization (DONE, 2026-10-21)
 Exit: measured numbers replace every estimate in the docs; at least 20% faster than the best competitor at equal or stronger security.
-- [ ] `criterion` benchmarks for issue, verify, policy, codec.
-- [ ] Competitor comparison harness (dev only, outside the published crate).
+- [x] `criterion` benchmarks for issue, verify, check, the policy, rejections, session lengths, one-time tokens, pads, and setup (`benches/csrf.rs`).
+- [x] Competitor comparison harness (`dev/bench-compare`, outside the published crate): 3.2x faster issue, 3.1x faster verify than `csrf` 0.5 HMAC, the fastest variant.
 - [x] Allocation-counting test on the verify path (done in `0.3.0`).
-- [ ] Tuning pass with each change measured.
+- [x] Tuning pass with each change measured: tag compare, SWAR codec, origin parsing, cross-site path (D-050 to D-055).
+- [x] `docs/PERFORMANCE.md`; every estimate in README, API, and PLAN replaced by a measurement.
 
 ## v0.7.0 - Hardening
 Exit: an attack test for every threat T1-T15 that fails to get through; fuzz targets run clean; the constant-time smoke test runs in CI.

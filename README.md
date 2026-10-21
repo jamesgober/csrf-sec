@@ -29,7 +29,7 @@
         <strong>MSRV is 1.85+</strong> (Rust 2024 edition). <code>#![forbid(unsafe_code)]</code>. <code>no_std</code> core (with <code>alloc</code>).
     </p>
     <blockquote>
-        <strong>Status: <code>0.5.0</code>, feature complete.</strong> Session tokens, one-time tokens, the request origin policy, modes, the builder, key rotation and ring introspection, and all three API tiers are built and tested; the core builds for bare-metal targets. Benchmarks against other CSRF crates arrive in <code>0.6.0</code>; the hardening phase (fuzzing, timing tests, an attack test per threat) in <code>0.7.0</code>. The schedule is <a href="./dev/ROADMAP.md"><code>dev/ROADMAP.md</code></a>.
+        <strong>Status: <code>0.6.0</code>, feature complete and measured.</strong> Session tokens, one-time tokens, the request origin policy, modes, the builder, key rotation and ring introspection, and all three API tiers are built, tested, and benchmarked; the core builds for bare-metal targets. The hardening phase (fuzzing, timing tests, an attack test per threat) is <code>0.7.0</code>. The schedule is <a href="./dev/ROADMAP.md"><code>dev/ROADMAP.md</code></a>.
     </blockquote>
 </div>
 
@@ -40,7 +40,7 @@
 
 ```toml
 [dependencies]
-csrf-sec = "0.5.0"
+csrf-sec = "0.6.0"
 ```
 
 ## Quick Start
@@ -71,14 +71,23 @@ A refusal carries a reason (`bad_mac`, `cross_site`, `expired`, ...) and a sever
 
 ## How it works
 
-| Layer | Stops | Cost [est.] |
+| Layer | Stops | Cost (measured) |
 |---|---|---|
-| **Request origin policy.** `Sec-Fetch-Site: cross-site` on an unsafe request is refused unless its origin is allowed; without Fetch Metadata, `Origin` (then `Referer`) must match this site. Script cannot forge these headers. | cross-site form posts, `Origin: null` tricks, top-level cross-site POST navigation | ≤ 50 ns |
-| **Signed, session-bound token.** Keyed BLAKE3 over the session id (and optionally one action), 128-bit tag, compared in constant time; the session id never appears in the token. | forged and replayed-across-session tokens, tokens taken from another form | ≤ 300 ns |
-| **Per-response masking.** Every page shows different token text (fresh CSPRNG pad), all of it valid. | BREACH-style recovery from compressed pages | ~20 ns |
+| **Request origin policy.** `Sec-Fetch-Site: cross-site` on an unsafe request is refused unless its origin is allowlisted; without Fetch Metadata, `Origin` (then `Referer`) must match this site. Script cannot forge these headers. | cross-site form posts, `Origin: null` tricks, top-level cross-site POST navigation | 1.3 ns on Fetch Metadata, 19 to 37 ns on `Origin` and `Referer` |
+| **Signed, session-bound token.** Keyed BLAKE3 over the session id (and optionally one action), 128-bit tag, compared in constant time; the session id never appears in the token. | forged and replayed-across-session tokens, tokens taken from another form | verify 110 ns, issue 112 ns |
+| **Per-response masking.** Every page shows different token text (fresh CSPRNG pad), all of it valid. | BREACH-style recovery from compressed pages | 28 ns per pad on Linux, 8 ns on Windows |
 | **Cookie guidance.** `__Host-` prefix, `SameSite=Lax`, `Secure`, `HttpOnly` on the session cookie, applied by your cookie layer. Tokens are never compared to a cookie. | cookie tossing from a subdomain | none |
 
-Costs are estimates until `0.6.0` replaces them with measurements. Zero allocation on issue, verify, check, and every rejection path is already measured by a counting-allocator test.
+Measured on Linux (Ryzen 9 9950X3D); method and every number in [`docs/PERFORMANCE.md`](./docs/PERFORMANCE.md). Zero allocation on issue, verify, check, and every rejection path, asserted by a counting-allocator test on Linux, macOS, and Windows.
+
+### Against the `csrf` crate
+
+| Per request | csrf-sec | `csrf` 0.5 HMAC | `csrf` 0.5 AES-GCM | `csrf` 0.5 ChaCha20 |
+|---|---|---|---|---|
+| issue | **165 ns** | 530 ns | 1.11 µs | 3.34 µs |
+| verify | **141 ns** | 430 ns | 407 ns | 2.46 µs |
+
+Measured, same machine and harness (`dev/bench-compare`). csrf-sec is also session-bound, masked per response, allocation-free, and never puts token values into errors; `csrf` 0.5 is none of those (details in `docs/PERFORMANCE.md`).
 
 <br>
 
@@ -104,6 +113,7 @@ Cross-site scripting defeats every CSRF defence, because script on the page can 
 ## Documentation
 
 - [`docs/API.md`](./docs/API.md): the API by task, with recipes (no server session, single-page apps, tenants, logging), every example compiled as a test.
+- [`docs/PERFORMANCE.md`](./docs/PERFORMANCE.md): measured costs of every call and rejection, and the comparison with the `csrf` crate.
 - [docs.rs/csrf-sec](https://docs.rs/csrf-sec): item reference.
 - [`dev/PLAN.md`](./dev/PLAN.md): the design, threats T1-T15 with defence and cost, and the decision log.
 - [`CHANGELOG.md`](./CHANGELOG.md).
