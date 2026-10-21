@@ -16,7 +16,7 @@
 
 A task-oriented tour of the API, Tier 1 first. The rustdoc on [docs.rs](https://docs.rs/csrf-sec) is the item-by-item reference. Every `rust` example in this file is compiled and run as a doctest, so it matches the build; lines starting with `#` are setup hidden in rustdoc.
 
-> **Status: `0.4.0`.** Session tokens, one-time tokens, the request policy, modes, the builder, key rotation, and all three tiers are built.
+> **Status: `0.5.0`, feature complete.** Session tokens, one-time tokens, the request policy, modes, the builder, key rotation and ring introspection, and all three tiers are built; the core builds for bare-metal targets.
 
 - [Setup](#setup)
 - [Tier 1: three calls](#tier-1-three-calls)
@@ -31,6 +31,7 @@ A task-oriented tour of the API, Tier 1 first. The rustdoc on [docs.rs](https://
 - [Tier 3: explicit time and randomness](#tier-3-explicit-time-and-randomness)
 - [Verdicts and reasons](#verdicts-and-reasons)
 - [Errors](#errors)
+- [Recipes](#recipes)
 - [Constants](#constants)
 - [Feature flags](#feature-flags)
 - [Cookie guidance](#cookie-guidance)
@@ -40,7 +41,7 @@ A task-oriented tour of the API, Tier 1 first. The rustdoc on [docs.rs](https://
 
 ```toml
 [dependencies]
-csrf-sec = "0.4.0"
+csrf-sec = "0.5.0"
 ```
 
 `csrf-sec` has one job: decide whether a state-changing request came from your own page, for this session. It never parses HTTP. Your adapter (a framework middleware, web-net, a WASP service) hands it plain values: the session id, the submitted token, and the request's origin facts.
@@ -269,6 +270,8 @@ impl Csrf {
     pub fn signing_key(&self) -> KeyId;
     pub fn accepts(&self, id: KeyId) -> bool;                                          // std
     pub fn accepts_at(&self, id: KeyId, now: u64) -> bool;
+    pub fn keys(&self) -> impl Iterator<Item = KeyInfo> + '_;                          // signing first
+    pub fn key_fingerprint(&self, id: KeyId) -> Option<KeyFingerprint>;
     pub fn mode(&self) -> Mode;
     pub fn lifetime(&self) -> Duration;
     pub fn skew(&self) -> Duration;
@@ -324,6 +327,23 @@ let csrf = csrf.rotated(KeyId(1), *b"second key, 32 bytes long......!")?;
 let passed = csrf.verify("session-1", &token)?;
 assert!(passed.retired_key());            // still valid: signed by the retired key
 assert_eq!(csrf.signing_key(), KeyId(1));
+# Ok(())
+# }
+```
+
+**Inspecting the ring.** `keys()` lists every key (signing first) as a `KeyInfo`: its `id()`, its `role()` (`KeyRole::Signing`, `Accepted`, or `Retired { until }`), and a public `fingerprint()`. A `KeyFingerprint` is eight bytes of keyed BLAKE3 over a fixed label under the key's subkey: it reveals nothing about the key and cannot help forge a token, but two nodes holding the same key under the same id show the same fingerprint. Compare fingerprints across a cluster (`Display` is 16 hex digits) to catch a misdeployed ring before it shows up as a wave of `bad_mac` refusals.
+
+```rust
+# use csrf_sec::{Csrf, KeyId, KeyRole};
+# fn main() -> Result<(), csrf_sec::Error> {
+let node_a = Csrf::builder().key(KeyId(1), *b"shared cluster key, 32 bytes!!!!").build()?;
+let node_b = Csrf::builder().key(KeyId(1), *b"shared cluster key, 32 bytes!!!!").build()?;
+assert_eq!(node_a.key_fingerprint(KeyId(1)), node_b.key_fingerprint(KeyId(1)));
+
+for key in node_a.keys() {
+    assert_eq!(key.role(), KeyRole::Signing);
+    println!("key {} fingerprint {}", key.id(), key.fingerprint());
+}
 # Ok(())
 # }
 ```
@@ -529,6 +549,55 @@ assert_eq!(Csrf::new([0u8; 32]).unwrap_err(), Error::WeakKey(KeyId(0)));
 assert_eq!(Csrf::builder().build().unwrap_err(), Error::NoSigningKey);
 ```
 
+## Recipes
+
+### No server-side session
+
+An API or site without sessions can still bind tokens to the browser: set a random, `__Host-` prefixed cookie once (at least 128 bits from a CSPRNG), and use its value as the session id. This is the signed double-submit pattern, with the cookie value inside the MAC instead of compared to the token, so a planted or overwritten cookie only produces tokens that fail.
+
+```rust
+# use csrf_sec::{Csrf, OsPads, PadSource};
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
+# let csrf = Csrf::new(*b"an example key, 32 bytes long!!!")?;
+let mut seed = [0u8; 32];
+OsPads.fill(&mut seed)?;                                  // any CSPRNG works
+let cookie_value: String = seed.iter().map(|b| format!("{b:02x}")).collect();
+// Set-Cookie: __Host-csrf=<cookie_value>; Secure; HttpOnly; SameSite=Lax; Path=/
+
+let token = csrf.issue(&cookie_value)?;                   // bind to the cookie value
+csrf.verify(&cookie_value, &token)?;
+# Ok(())
+# }
+```
+
+### Revoke every token of a session without changing its id
+
+Bind to the session id plus a generation counter your session layer bumps on a password or privilege change. Every outstanding token of that session then fails as `BadMac`.
+
+```rust
+# use csrf_sec::Csrf;
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
+# let csrf = Csrf::new(*b"an example key, 32 bytes long!!!")?;
+# let (session_id, generation) = ("session-1", 7u64);
+let bound = format!("{session_id}:{generation}");
+let token = csrf.issue(&bound)?;
+assert!(csrf.verify(format!("{session_id}:{}", generation + 1), &token).is_err());
+# Ok(())
+# }
+```
+
+### Several tenants on one key ring
+
+Session ids are normally unique across tenants, which already keeps tokens apart. If they might collide, prefix the scope (or the session id) with the tenant, or give each tenant its own key id. Prefixing costs nothing: the MAC input is length-prefixed, so `("a", "b:c")` and `("a:b", "c")` stay distinct.
+
+### Single-page applications
+
+Render the token into the page (`<meta name="csrf-token" content="...">`) and send it on every unsafe `fetch` in the `HEADER_NAME` header (`x-csrf-token`). The adapter reads the header instead of a form field; nothing else changes. Requests made with `fetch` carry `Sec-Fetch-Site` and `Origin` like forms do.
+
+### Logging and detection
+
+Log `reason().as_str()`, `severity()`, and `key_id()` on every refusal, never the token or the session id. A rising rate of `bad_mac`, `cross_site`, or `origin_mismatch` for one session is a strong sign of an active attack on that user; feed the reason and severity to your detection layer (sentinel-sec, bouncer-io). `stale_session` and `expired` are benign; `retired_key()` on a pass means a rotation is in progress.
+
 ## Constants
 
 | Constant | Value | Meaning |
@@ -551,7 +620,7 @@ assert_eq!(Csrf::builder().build().unwrap_err(), Error::NoSigningKey);
 | `std` | yes | Tier 1 and Tier 2 calls (system clock, `OsPads`), `rotated`, `accepts`, `MemoryStore`; implies `alloc` |
 | `alloc` | via `std` | `From<Token> for String` |
 
-With `default-features = false` the crate is `no_std` and needs an allocator (crypt-io does); the `_at` calls, `policy`, `rotated_at`, and `accepts_at` are available, and the verify path still allocates nothing.
+With `default-features = false` the crate is `no_std` and needs an allocator (crypt-io does); the `_at` calls, `policy`, `rotated_at`, `accepts_at`, `keys`, and `key_fingerprint` are available, and the verify path still allocates nothing. CI builds this configuration for `thumbv7em-none-eabi`, a target with no standard library at all; `examples/tier3.rs` shows the surface.
 
 ## Cookie guidance
 

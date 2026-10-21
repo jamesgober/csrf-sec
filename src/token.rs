@@ -20,7 +20,7 @@ use crate::{
     b64,
     binding::Binding,
     error::Error,
-    key::{Kind, Ring, Role, Slot},
+    key::{KeyRole, Kind, Ring, Slot},
     once::{NONCE_LEN, ONCE_TOKEN_LEN},
     pad::PadSource,
     verdict::{Reason, Rejected, Verdict, Verified},
@@ -350,7 +350,10 @@ impl Opened<'_> {
 
     /// The pass this token earns.
     pub(crate) fn verified(&self) -> Verified {
-        Verified::token(self.slot.id, matches!(self.slot.role, Role::Retired { .. }))
+        Verified::token(
+            self.slot.id,
+            matches!(self.slot.role, KeyRole::Retired { .. }),
+        )
     }
 }
 
