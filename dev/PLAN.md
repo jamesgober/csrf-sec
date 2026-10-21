@@ -4,7 +4,7 @@
 >
 > **Read order:** [`../REPS.md`](../REPS.md) &rarr; [`DIRECTIVES.md`](./DIRECTIVES.md) &rarr; **this file** &rarr; [`ROADMAP.md`](./ROADMAP.md).
 >
-> **Status:** design locked, `0.2.0`. The public surface is in [`../docs/API.md`](../docs/API.md); code lands from `0.3.0`.
+> **Status:** `0.3.0`, core built: session tokens, the request policy, modes, the builder, rotation, and all three tiers. One-time tokens are `0.4.0`. The public surface is [`../docs/API.md`](../docs/API.md), compiled as a doctest.
 
 ---
 
@@ -419,6 +419,7 @@ Each idea is a hypothesis with a method and an expected cost, tried in the phase
 - **Custom-header fact.** Hypothesis: for JSON APIs, requiring a non-simple request header (which forces a CORS preflight) blocks cross-site form posts with no token at all, as a layer-1 fact for `PolicyOnly`. Method: `RequestFacts::custom_header(bool)`. Cost [est.]: ~1 ns.
 - **Audience binding.** Hypothesis: multi-tenant hosts sharing one key ring can bind the target origin into the MAC so a token rendered for tenant A never verifies on tenant B, even with a colliding session id. Method: an optional audience field in the MAC input. Cost [est.]: one extra BLAKE3 block only when the audience pushes the input past 64 bytes.
 - **Key-commitment check on rotation (0.2).** Hypothesis: a misdeployed cluster (two nodes holding different bytes under the same key id) fails silently as `BadMac` storms that look like an attack. Method: expose a short public fingerprint per key id (keyed BLAKE3 of a fixed label under the subkey, 8 bytes) so deployment tooling can compare rings across nodes without revealing keys. Cost [est.]: one BLAKE3 per key at construction; nothing per request.
+- **Simple-content-type fact (0.3).** Hypothesis: a cross-site form post needs no CORS preflight only when its content type is "simple" (`application/x-www-form-urlencoded`, `multipart/form-data`, `text/plain`). JSON APIs that refuse simple content types on unsafe requests close the no-preflight path even for browsers without Fetch Metadata, with no token at all. Method: `RequestFacts::content_type(value)` and a `PolicyOnly` rule that refuses simple types when `Sec-Fetch-Site` is absent. Cost [est.]: ~5 ns, a few byte comparisons.
 - **Forgery-rate feedback.** Hypothesis: `BadMac` rates per session are a strong signal of an active attack against that user. Method: document the event shape for sentinel-sec; no state in this crate. Cost: none here.
 
 ---
@@ -453,3 +454,11 @@ Each idea is a hypothesis with a method and an expected cost, tried in the phase
 | D-024 | 2026-10-21 | Keys whose 32 bytes are all equal are refused | catches an unset or zeroed key buffer, the most common key bug, at construction |
 | D-025 | 2026-10-21 | `FIELD_NAME` (`csrf_token`) and `HEADER_NAME` (`x-csrf-token`) constants | adapters, web-net, and form-net agree on names without a convention document |
 | D-026 | 2026-10-21 | `Token` has no `PartialEq`, and its `Debug` is redacted; `Csrf`'s `Debug` shows key ids and settings only | tokens are bearer values for a session: no variable-time comparison by accident, nothing secret in logs |
+| D-027 | 2026-10-21 | Phases re-cut: the request policy, modes, and builder join `0.3.0` (they share `Verdict`, `OriginCheck`, and `check`); one-time tokens become `0.4.0`; `0.5.0` is feature completion (bare-metal `no_std` check, remaining ideas tried, docs) | nothing moves later; work moves earlier, so `0.3.0` ships a complete `check` instead of a half API |
+| D-028 | 2026-10-21 | The `--no-default-features` CI run tests the library and integration tests, not doctests | doctests show the default (`std`) API; the `no_std` surface is covered by unit and integration tests that use the `_at` calls |
+| D-029 | 2026-10-21 | MAC inputs up to 128 bytes are hashed in one call from a stack buffer, which is then cleared (best effort: zeroing kept by `black_box`, since the crate forbids `unsafe`); longer inputs are streamed through crypt-io's `Blake3Mac`, which wipes its state on drop | one call is the fast path for real session ids; the cleared copy may be the session secret; stack residue inside the hash function is outside what safe Rust can reach |
+| D-030 | 2026-10-21 | In `RequestFacts`, an empty header value counts as absent | adapters commonly pass `""` for a missing header; treating it as present-but-foreign would refuse every such request, while treating it as absent still leaves the token to decide |
+| D-031 | 2026-10-21 | `OsPads`: a 2 KiB buffer per thread, refilled from the OS through `mod-rand`, used bytes cleared, wiped at thread exit; requests over 512 bytes read the OS directly; `OsPads::refill()` for forked workers | about 90 pads per system call [derived]; no lock; after `fork`, repeated pads cannot help an attacker (see `pad.rs`), and `refill` removes even that |
+| D-032 | 2026-10-21 | When nothing is configured to compare against (no `own_origin`, no allowlist), a present `Origin` or `Referer` cannot be judged and the token decides; `null` and malformed values are still refused | refusing would break every deployment whose adapter omits `own_origin`, and the token still has to pass in `Strict`; `null` is never an allowed origin, so refusing it needs no configuration |
+| D-033 | 2026-10-21 | `FetchSite::parse` ignores surrounding spaces and tabs; the value itself must match exactly | HTTP parsers strip optional whitespace, but an adapter might not; script cannot set this header, so trimming widens nothing |
+| D-034 | 2026-10-21 | `docs/API.md` is compiled as a doctest (`#[doc = include_str!]` under `cfg(doctest)`) | every example in the reference is checked against the build on every CI run |

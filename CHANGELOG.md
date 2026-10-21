@@ -13,6 +13,50 @@
 
 ---
 
+## [0.3.0] - 2026-10-21
+
+The core. Session tokens, the request origin policy, modes, the builder, key
+rotation, and all three API tiers.
+
+### Added
+
+- `Csrf` with Tier 1 calls `new`, `issue`, `verify`, `check`; Tier 2
+  `issue_with`, `verify_with`, `check_with` over a `Binding` (session, scope,
+  previous session); Tier 3 `issue_at`, `verify_at`, `check_at` with explicit
+  time and a `PadSource`, available without `std`.
+- `Csrf::builder()` (`Builder`): signing, accepted, and retired keys
+  (`KeyId`, up to `MAX_KEYS`), lifetime, skew, `Mode`, allowed origins, and
+  sibling subdomains. `rotated` / `rotated_at` rotate keys without logging
+  anyone out and promote a staged key; `policy` runs layer 1 alone.
+- `Token`: inline (no heap), 59 characters of base64url, masked with fresh
+  randomness on every issue, `Debug` redacted, no `PartialEq`.
+- `RequestFacts`, `MethodClass`, `FetchSite`, `OriginCheck`: the layer-1
+  decision over `Sec-Fetch-Site`, `Origin`, and `Referer`, with strict origin
+  parsing and default-port normalization.
+- `Verdict`, `Verified`, `Rejected`, and `Reason` with severities and stable
+  names; `Error` with actionable messages.
+- `OsPads`: a per-thread buffer refilled in bulk from the OS CSPRNG through
+  `mod-rand`.
+- Constant-time, canonical-only base64url codec.
+- Constants `TOKEN_LEN`, `KEY_LEN`, `MAX_KEYS`, `FIELD_NAME`, `HEADER_NAME`,
+  `DEFAULT_LIFETIME`, `DEFAULT_SKEW`.
+- Dependencies: `crypt-io` 1.1 (keyed BLAKE3, constant-time tag compare,
+  `Zeroizing`) and `mod-rand` 1 (`std` only).
+- Tests: exhaustive character-change and single-bit-flip rejection,
+  cross-session, cross-scope, and cross-key refusal, an independent
+  reimplementation of the token format, a counting-allocator test proving zero
+  allocations on issue, verify, check, and every rejection path, and every
+  branch of the policy decision.
+- Examples `basic` and `rotation`; `docs/API.md` is compiled as a doctest.
+
+### Changed
+
+- The policy layer, modes, and builder moved into this release from `0.4.0`;
+  one-time tokens are now `0.4.0` (roadmap re-cut, PLAN D-027).
+- The `--no-default-features` CI run covers library and integration tests.
+
+---
+
 ## [0.2.0] - 2026-10-21
 
 Design lock. The public API and the token format are written down; no
@@ -53,6 +97,7 @@ The scaffold and the plan. No functional code yet.
   keys and rotation, verdicts, threats T1-T15, architecture, ecosystem, open
   decisions, decision log), `dev/DIRECTIVES.md`, and `dev/ROADMAP.md`.
 
-[Unreleased]: https://github.com/jamesgober/csrf-sec/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/jamesgober/csrf-sec/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/jamesgober/csrf-sec/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/jamesgober/csrf-sec/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/jamesgober/csrf-sec/releases/tag/v0.1.0

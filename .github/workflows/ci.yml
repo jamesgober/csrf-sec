@@ -41,8 +41,10 @@ jobs:
         run: cargo test
       - name: Test (all features)
         run: cargo test --all-features
+      # Doctests show the default (std) API, so the no_std run covers the
+      # library and integration tests only.
       - name: Test (no default features)
-        run: cargo test --no-default-features
+        run: cargo test --no-default-features --lib --tests
       - name: Build examples
         run: cargo build --examples
       - name: Doc (all features)
