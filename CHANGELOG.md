@@ -13,6 +13,29 @@
 
 ---
 
+## [0.7.0] - 2026-10-21
+
+Hardened. No change to the library's behaviour or API.
+
+### Added
+
+- `tests/attacks.rs`: one attack per threat T1 to T15 (classic CSRF, login
+  CSRF, forced logout, BREACH, cross-session and cross-action replay, cookie
+  tossing, forgery, timing, key compromise, oversized input, clock skew,
+  method look-alikes, `Origin: null`, cross-site navigation), each of which
+  must fail.
+- `tests/properties.rs` (proptest): round trip, character changes, another
+  session, scope, or key, arbitrary input, the policy, and the exact validity
+  window.
+- `tests/timing.rs`: dudect-style statistical tests showing the tag comparison
+  and the decoder take the same time whatever the data, with a control that
+  must detect a real difference. Run with `--release --ignored`.
+- `fuzz/`: four cargo-fuzz targets that assert security invariants (`verify`,
+  `mutate`, `policy`, `once`).
+- CI jobs: timing smoke test, and a 30-second fuzz run per target.
+
+---
+
 ## [0.6.0] - 2026-10-21
 
 Measured and tuned.
@@ -189,7 +212,8 @@ The scaffold and the plan. No functional code yet.
   keys and rotation, verdicts, threats T1-T15, architecture, ecosystem, open
   decisions, decision log), `dev/DIRECTIVES.md`, and `dev/ROADMAP.md`.
 
-[Unreleased]: https://github.com/jamesgober/csrf-sec/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/jamesgober/csrf-sec/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/jamesgober/csrf-sec/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/jamesgober/csrf-sec/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/jamesgober/csrf-sec/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/jamesgober/csrf-sec/compare/v0.3.0...v0.4.0

@@ -3,7 +3,7 @@
 # =============================================================================
 [package]
 name    = "csrf-sec"
-version = "0.6.0"
+version = "0.7.0"
 
 # Minimum Supported Rust Version (MSRV)
 rust-version = "1.85"
@@ -33,7 +33,7 @@ documentation = "https://docs.rs/csrf-sec"
 authors = ["James Gober <me@jamesgober.com>"]
 
 # The comparison benchmarks carry third-party crates and are never published.
-exclude = ["/dev/bench-compare"]
+exclude = ["/dev/bench-compare", "/fuzz"]
 
 [package.metadata.docs.rs]
 all-features = true
@@ -73,6 +73,8 @@ mod-rand = { version = "1", optional = true, default-features = false, features 
 [dev-dependencies]
 # Benchmarks only; never linked into the library.
 criterion = { version = "0.7", default-features = false, features = ["cargo_bench_support"] }
+# Property tests only; never linked into the library.
+proptest = { version = "1.6", default-features = false, features = ["std"] }
 
 
 # EXAMPLES

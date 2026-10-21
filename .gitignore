@@ -5,6 +5,10 @@
 # Rust / Cargo
 /target/
 /dev/bench-compare/target/
+/fuzz/target/
+/fuzz/corpus/
+/fuzz/artifacts/
+/fuzz/coverage/
 **/*.rs.bk
 
 # Editor & OS junk

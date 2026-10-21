@@ -53,12 +53,12 @@ Exit: measured numbers replace every estimate in the docs; at least 20% faster t
 - [x] Tuning pass with each change measured: tag compare, SWAR codec, origin parsing, cross-site path (D-050 to D-055).
 - [x] `docs/PERFORMANCE.md`; every estimate in README, API, and PLAN replaced by a measurement.
 
-## v0.7.0 - Hardening
+## v0.7.0 - Hardening (DONE, 2026-10-21)
 Exit: an attack test for every threat T1-T15 that fails to get through; fuzz targets run clean; the constant-time smoke test runs in CI.
-- [ ] Attack tests T1-T15.
-- [ ] Property tests: round trip, single-bit flips, wrong session, scope, key.
-- [ ] Fuzz targets: decode, verify, policy.
-- [ ] Statistical timing test (dudect method) for the tag comparison and the codec.
+- [x] Attack tests T1-T15 (`tests/attacks.rs`).
+- [x] Property tests: round trip, character changes, wrong session, scope, key, arbitrary input, policy, validity window (`tests/properties.rs`).
+- [x] Fuzz targets with invariants: `verify`, `mutate`, `policy`, `once`; CI smoke run of 30 seconds each.
+- [x] Statistical timing test (dudect method) for the tag comparison and the codec, with a control; CI smoke run; 2,000,000-sample run at \|t\| < 4.5 passed locally.
 
 ## v0.8.0 - Alpha
 - [ ] API review against real adapter use; docs complete; examples for each tier.

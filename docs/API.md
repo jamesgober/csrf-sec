@@ -16,7 +16,7 @@
 
 A task-oriented tour of the API, Tier 1 first. The rustdoc on [docs.rs](https://docs.rs/csrf-sec) is the item-by-item reference. Every `rust` example in this file is compiled and run as a doctest, so it matches the build; lines starting with `#` are setup hidden in rustdoc.
 
-> **Status: `0.6.0`.** Feature complete and measured: every cost below is a measurement from [`PERFORMANCE.md`](./PERFORMANCE.md) (Linux, Ryzen 9 9950X3D) unless marked as an estimate.
+> **Status: `0.7.0`.** Feature complete, measured, and hardened: every cost below is a measurement from [`PERFORMANCE.md`](./PERFORMANCE.md) (Linux, Ryzen 9 9950X3D) unless marked as an estimate.
 
 - [Setup](#setup)
 - [Tier 1: three calls](#tier-1-three-calls)
@@ -41,7 +41,7 @@ A task-oriented tour of the API, Tier 1 first. The rustdoc on [docs.rs](https://
 
 ```toml
 [dependencies]
-csrf-sec = "0.6.0"
+csrf-sec = "0.7.0"
 ```
 
 `csrf-sec` has one job: decide whether a state-changing request came from your own page, for this session. It never parses HTTP. Your adapter (a framework middleware, web-net, a WASP service) hands it plain values: the session id, the submitted token, and the request's origin facts.
