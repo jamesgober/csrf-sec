@@ -2,6 +2,8 @@
 
 use core::fmt;
 
+use crate::once::NonceStore;
+
 /// What a token is bound to: a session id, and optionally a scope and the
 /// previous session id.
 ///
@@ -16,6 +18,7 @@ use core::fmt;
 /// - **Previous session.** After a login rotates the session id, tabs opened
 ///   before it hold tokens for the old id. Passing it lets those fail as
 ///   `StaleSession` (benign) instead of `BadMac` (forgery). They never pass.
+/// - **Once.** Makes the token one-time, through a [`NonceStore`].
 ///
 /// ```
 /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -35,6 +38,7 @@ pub struct Binding<'a> {
     pub(crate) session: &'a [u8],
     pub(crate) scope: &'a [u8],
     pub(crate) previous: Option<&'a [u8]>,
+    pub(crate) store: Option<&'a dyn NonceStore>,
 }
 
 impl<'a> Binding<'a> {
@@ -45,6 +49,7 @@ impl<'a> Binding<'a> {
             session: session.as_ref(),
             scope: &[],
             previous: None,
+            store: None,
         }
     }
 
@@ -68,6 +73,18 @@ impl<'a> Binding<'a> {
         };
         self
     }
+
+    /// Make the token one-time: the first successful verify records its nonce
+    /// in `store`, so a second use fails as
+    /// [`Reason::AlreadyUsed`](crate::Reason::AlreadyUsed). Issuing does not
+    /// touch the store. One-time tokens are
+    /// [`ONCE_TOKEN_LEN`](crate::ONCE_TOKEN_LEN) characters. A one-time binding
+    /// always checks the token, whatever the [`Mode`](crate::Mode).
+    #[must_use]
+    pub fn once(mut self, store: &'a dyn NonceStore) -> Self {
+        self.store = Some(store);
+        self
+    }
 }
 
 impl fmt::Debug for Binding<'_> {
@@ -77,6 +94,7 @@ impl fmt::Debug for Binding<'_> {
             .field("session_len", &self.session.len())
             .field("scope_len", &self.scope.len())
             .field("previous_session", &self.previous.is_some())
+            .field("once", &self.store.is_some())
             .finish()
     }
 }

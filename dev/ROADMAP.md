@@ -29,11 +29,13 @@ The policy layer, modes, and builder moved here from `0.4.0` (PLAN D-027).
 - [x] Independent reimplementation test of the token format.
 - [x] Examples (`basic`, `rotation`); `docs/API.md` compiled as a doctest.
 
-## v0.4.0 - One-time tokens
+## v0.4.0 - One-time tokens (DONE, 2026-10-21)
 Exit: a one-time token passes exactly once; forged one-time tokens never reach the store; a failing store fails closed.
-- [ ] Format version 2 (nonce), its own subkey label.
-- [ ] `NonceStore`, `StoreError`, `Binding::once`, `AlreadyUsed`, `StoreUnavailable`, `Error::Store`.
-- [ ] `MemoryStore`: sharded, bounded, expiring; concurrency tests.
+- [x] Format version 2 (nonce), its own subkey label; independent reimplementation test.
+- [x] `NonceStore` (`consume`, records used nonces only; issue never touches it), `NonceUse`, `StoreError`, `Binding::once`, `AlreadyUsed`, `StoreUnavailable`.
+- [x] `MemoryStore`: sharded, bounded, expiring, restart-safe; concurrency tests (exactly one of eight concurrent verifies passes).
+- [x] A spy store proves forged, wrong-session, wrong-scope, expired, and malformed tokens never reach `consume`, and issuing never calls it.
+- [x] Zero allocation on the one-time path with an allocation-free store.
 
 ## v0.5.0 - Feature complete
 Exit: every planned feature present and tested; the `no_std` core builds for a bare-metal target in CI.

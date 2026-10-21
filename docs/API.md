@@ -16,7 +16,7 @@
 
 A task-oriented tour of the API, Tier 1 first. The rustdoc on [docs.rs](https://docs.rs/csrf-sec) is the item-by-item reference. Every `rust` example in this file is compiled and run as a doctest, so it matches the build; lines starting with `#` are setup hidden in rustdoc.
 
-> **Status: `0.3.0`.** Session tokens, the request policy, modes, the builder, key rotation, and all three tiers are built. One-time tokens (`NonceStore`, `MemoryStore`) land in `0.4.0`; their section below is marked and its example is not compiled yet.
+> **Status: `0.4.0`.** Session tokens, one-time tokens, the request policy, modes, the builder, key rotation, and all three tiers are built.
 
 - [Setup](#setup)
 - [Tier 1: three calls](#tier-1-three-calls)
@@ -27,7 +27,7 @@ A task-oriented tour of the API, Tier 1 first. The rustdoc on [docs.rs](https://
   - [The decision](#the-decision)
   - [Modes](#modes)
 - [Keys, the builder, and rotation](#keys-the-builder-and-rotation)
-- [One-time tokens (0.4.0)](#one-time-tokens-040)
+- [One-time tokens](#one-time-tokens)
 - [Tier 3: explicit time and randomness](#tier-3-explicit-time-and-randomness)
 - [Verdicts and reasons](#verdicts-and-reasons)
 - [Errors](#errors)
@@ -40,7 +40,7 @@ A task-oriented tour of the API, Tier 1 first. The rustdoc on [docs.rs](https://
 
 ```toml
 [dependencies]
-csrf-sec = "0.3.0"
+csrf-sec = "0.4.0"
 ```
 
 `csrf-sec` has one job: decide whether a state-changing request came from your own page, for this session. It never parses HTTP. Your adapter (a framework middleware, web-net, a WASP service) hands it plain values: the session id, the submitted token, and the request's origin facts.
@@ -93,7 +93,7 @@ pub struct Token { /* inline buffer, no heap */ }
 impl Token {
     pub fn as_str(&self) -> &str;
     pub fn as_bytes(&self) -> &[u8];
-    pub fn len(&self) -> usize;          // TOKEN_LEN (59)
+    pub fn len(&self) -> usize;          // TOKEN_LEN (59) or ONCE_TOKEN_LEN (102)
     pub fn is_empty(&self) -> bool;      // always false
 }
 // Deref<Target = str>, AsRef<str>, AsRef<[u8]>, Display (the token text),
@@ -127,6 +127,7 @@ impl<'a> Binding<'a> {
     pub fn new<S: AsRef<[u8]> + ?Sized>(session: &'a S) -> Self;
     pub fn scope<S: AsRef<[u8]> + ?Sized>(self, scope: &'a S) -> Self;
     pub fn previous_session<S: AsRef<[u8]> + ?Sized>(self, previous: &'a S) -> Self;
+    pub fn once(self, store: &'a dyn NonceStore) -> Self;
 }
 
 impl Csrf {
@@ -168,6 +169,7 @@ impl Csrf {
   # Ok(())
   # }
   ```
+- **Once.** Makes the token one-time; see [One-time tokens](#one-time-tokens).
 
 Cost of a scope or previous session: only failing tokens pay for the extra MACs used to tell the reasons apart, at most two extra keyed BLAKE3 calls [est. ~60 ns each], so verify work stays fixed and bounded.
 
@@ -326,23 +328,80 @@ assert_eq!(csrf.signing_key(), KeyId(1));
 # }
 ```
 
-## One-time tokens (0.4.0)
+## One-time tokens
 
-Planned for `0.4.0` (this section describes the locked design; the example is not compiled yet). For actions where a token must not be usable twice (a payment, deleting an account):
+For actions where a token must not be usable twice (a payment, deleting an account), bind a `NonceStore`:
+
+```rust
+use csrf_sec::{Binding, Csrf, MemoryStore, Reason};
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
+# let csrf = Csrf::new(*b"an example key, 32 bytes long!!!")?;
+# let session_id = "session-1";
+
+let store = MemoryStore::new(100_000);      // at startup; shared by every request
+# // This test runs inside the store's first second, which MemoryStore refuses (see below).
+# let store = MemoryStore::starting_at(100_000, 0);
+let pay = Binding::new(session_id).scope("POST /pay").once(&store);
+
+let token = csrf.issue_with(&pay)?;          // 102 characters; the store is not touched
+# let submitted = token.as_str();
+csrf.verify_with(&pay, submitted)?;          // passes once
+let again = csrf.verify_with(&pay, submitted);
+assert_eq!(again.unwrap_err().reason(), Reason::AlreadyUsed);
+# Ok(())
+# }
+```
+
+A one-time token is a signed token with a 128-bit random nonce inside the MAC (format version 2, its own subkey). Because the MAC already proves the token came from this key ring, the store does not need to know which tokens were issued: **it only records nonces when they are used**. Issuing never touches the store, so rendering a page costs no store write, and the store holds only tokens that were actually submitted.
+
+**The MAC, lifetime, and scope are checked before the store is consulted**, so forged requests never reach it: they cannot burn a user's token and cannot load a shared store. A one-time binding always checks the token, whatever the mode.
 
 ```rust,ignore
 pub trait NonceStore {
-    fn insert(&self, session: &[u8], nonce: &[u8; 16], expires_at: u64) -> Result<(), StoreError>;
-    fn take(&self, session: &[u8], nonce: &[u8; 16], now: u64) -> Result<bool, StoreError>;
+    fn consume(&self, use_: &NonceUse<'_>) -> Result<bool, StoreError>;
 }
 
-let store = MemoryStore::new(100_000);
-let pay = Binding::new(session_id).scope("POST /pay").once(&store);
-let token = csrf.issue_with(&pay)?;          // 102 characters
-csrf.verify_with(&pay, submitted)?;          // passes once; a second use fails as AlreadyUsed
+#[non_exhaustive]
+pub struct NonceUse<'a> {
+    pub session: &'a [u8],        // already proven by the MAC
+    pub nonce: [u8; 16],          // random, generated at issue, never client-chosen
+    pub issued_at: u64,           // unix seconds
+    pub expires_at: u64,          // keep the record until at least this time: lifetime plus skew
+    pub now: u64,                 // the verifying node's time
+}
+
+#[non_exhaustive]
+pub enum StoreError { Unavailable, Full }
+
+pub struct MemoryStore { /* feature `std` */ }
+impl MemoryStore {
+    pub fn new(capacity: usize) -> Self;                       // starts now, by the system clock
+    pub fn starting_at(capacity: usize, started_at: u64) -> Self;
+    pub fn len(&self) -> usize;
+    pub fn is_empty(&self) -> bool;
+    pub fn purge_expired(&self, now: u64);
+}
 ```
 
-A one-time token is a signed token with a 128-bit random nonce inside the MAC; the store holds the outstanding nonces. The MAC, lifetime, and scope are checked before the store is touched, so forged requests never reach the store: they cannot burn a user's token and cannot load a shared store.
+The store contract: `consume` **atomically** records the nonce and returns `Ok(true)` only for its first use. `Ok(false)` (already recorded, or the store cannot vouch that it was not) refuses the request as `AlreadyUsed`; `Err` refuses it as `StoreUnavailable`. Two concurrent calls for one nonce must not both return `Ok(true)`: in a key-value store, set-if-absent with an expiry of `expires_at`.
+
+`MemoryStore` serves one node and tests: 64 shards, each behind its own short-held lock; at most `capacity / 64` (rounded up) records per shard; a full shard drops expired records and otherwise refuses (`StoreUnavailable`) rather than forgetting a used token. About 40 bytes per record [est.]. Its memory lives in this process only, so that a restart cannot let a used token pass again it refuses every token issued at or before the second it started: a page rendered in the store's first second must be reloaded. For a cluster, implement `NonceStore` over a store every node reaches (WASP: the gates' session store).
+
+```rust
+use std::{collections::HashSet, sync::Mutex};
+use csrf_sec::{NonceStore, NonceUse, StoreError};
+
+struct Simple(Mutex<HashSet<[u8; 16]>>);
+
+impl NonceStore for Simple {
+    fn consume(&self, use_: &NonceUse<'_>) -> Result<bool, StoreError> {
+        let mut used = self.0.lock().map_err(|_| StoreError::Unavailable)?;
+        Ok(used.insert(use_.nonce))
+    }
+}
+```
+
+Cost: one store call on a verify whose MAC passed, plus the normal verify; none on issue. One-time tokens are the one stateful feature; session tokens never touch a store.
 
 ## Tier 3: explicit time and randomness
 
@@ -420,8 +479,8 @@ impl Reason {
 | `CrossSite` | `cross_site` | layer 1: a cross-site unsafe request | 30 |
 | `OriginMismatch` | `origin_mismatch` | layer 1: a foreign origin | 30 |
 | `Unverifiable` | `unverifiable` | the check cannot run: no session id, or no Fetch Metadata in `PolicyOnly` | 5 |
-
-`AlreadyUsed` (20) and `StoreUnavailable` (5) arrive with one-time tokens in `0.4.0`.
+| `AlreadyUsed` | `already_used` | a one-time token presented again (or the store cannot vouch it was not, as after a restart) | 20 |
+| `StoreUnavailable` | `store_unavailable` | the one-time store could not answer | 5 |
 
 The reason is decided **after** the MAC: a forged token is never reported as expired, and an expired real token is never reported as forged. Reasons are for logs and scoring (sentinel-sec, bouncer-io); clients get a generic refusal (HTTP 403). A token signed by a retired key passes, with `retired_key()` set.
 
@@ -476,6 +535,8 @@ assert_eq!(Csrf::builder().build().unwrap_err(), Error::NoSigningKey);
 |---|---|---|
 | `VERSION` | `env!("CARGO_PKG_VERSION")` | crate version |
 | `TOKEN_LEN` | 59 | session token text length |
+| `ONCE_TOKEN_LEN` | 102 | one-time token text length |
+| `NONCE_LEN` | 16 | one-time token nonce length in bytes |
 | `KEY_LEN` | 32 | key length in bytes |
 | `MAX_KEYS` | 16 | keys a ring holds at once |
 | `FIELD_NAME` | `"csrf_token"` | suggested hidden form field name |
@@ -487,7 +548,7 @@ assert_eq!(Csrf::builder().build().unwrap_err(), Error::NoSigningKey);
 
 | Feature | Default | Adds |
 |---|---|---|
-| `std` | yes | Tier 1 and Tier 2 calls (system clock, `OsPads`), `rotated`, `accepts`; implies `alloc` |
+| `std` | yes | Tier 1 and Tier 2 calls (system clock, `OsPads`), `rotated`, `accepts`, `MemoryStore`; implies `alloc` |
 | `alloc` | via `std` | `From<Token> for String` |
 
 With `default-features = false` the crate is `no_std` and needs an allocator (crypt-io does); the `_at` calls, `policy`, `rotated_at`, and `accepts_at` are available, and the verify path still allocates nothing.
@@ -508,16 +569,17 @@ Little-endian integers throughout.
 
 ```text
  raw session token (22 bytes):   version=1 (1) | key id (1) | issued at (4) | tag (16)
+ raw one-time token (38 bytes):  version=2 (1) | key id (1) | issued at (4) | nonce (16) | tag (16)
  issued at:                      seconds since 2020-01-01T00:00:00Z
 
- MAC input:  version | key id | issued at | varint(len session) | varint(len scope) | session | scope
+ MAC input:  version | key id | issued at | [nonce] | varint(len session) | varint(len scope) | session | scope
  tag:        first 16 bytes of keyed BLAKE3(subkey, MAC input)
- subkey:     keyed BLAKE3(application key, "csrf-sec/v1 session-token mac key" | key id), derived once
+ subkey:     keyed BLAKE3(application key, label | key id), derived once
+ labels:     "csrf-sec/v1 session-token mac key", "csrf-sec/v1 one-time-token mac key"
 
- masked:     pad (22) | raw XOR pad                pad: fresh CSPRNG bytes per issue
- text:       base64url, no padding, canonical      59 characters
+ masked:     pad (len raw) | raw XOR pad           pad: fresh CSPRNG bytes per issue
+ text:       base64url, no padding, canonical      59 or 102 characters
+ one-time:   the nonce is drawn from the PadSource before the pad
 ```
 
-Lengths are LEB128 varints, so the encoding is canonical for any length and short inputs (a 43-character session id with no scope) fit in one 64-byte BLAKE3 block. Decoding is constant time and accepts only canonical text: any change to any character of a token makes it fail. `tests/tokens.rs` rebuilds a token from this description with crypt-io directly and compares it byte for byte with what the crate issues.
-
-One-time tokens (`0.4.0`) use format version 2: `version=2 | key id | issued at | nonce (16) | tag (16)`, 38 raw bytes, 102 characters, under their own subkey label.
+Lengths are LEB128 varints, so the encoding is canonical for any length and short inputs (a 43-character session id with no scope) fit in one 64-byte BLAKE3 block. Decoding is constant time and accepts only canonical text: any change to any character of a token makes it fail. `tests/tokens.rs` and `tests/once.rs` rebuild both formats from this description with crypt-io directly and compare them byte for byte with what the crate issues.

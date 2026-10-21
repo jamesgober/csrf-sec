@@ -51,9 +51,9 @@
 //!
 //! ## Tier 2
 //!
-//! A [`Binding`] adds a scope (one action) or the previous session id, and
-//! [`Csrf::builder`] configures keys, rotation, lifetime, skew, [`Mode`], and
-//! allowed origins.
+//! A [`Binding`] adds a scope (one action), the previous session id, or a
+//! [`NonceStore`] for one-time tokens, and [`Csrf::builder`] configures keys,
+//! rotation, lifetime, skew, [`Mode`], and allowed origins.
 //!
 //! ## Tier 3
 //!
@@ -93,6 +93,7 @@ mod binding;
 mod csrf;
 mod error;
 mod key;
+mod once;
 mod pad;
 mod policy;
 mod token;
@@ -103,6 +104,7 @@ pub use crate::{
     csrf::{Builder, Csrf, DEFAULT_LIFETIME, DEFAULT_SKEW},
     error::Error,
     key::{KEY_LEN, KeyId, MAX_KEYS},
+    once::{NONCE_LEN, NonceStore, NonceUse, ONCE_TOKEN_LEN, StoreError},
     pad::PadSource,
     policy::{FetchSite, MethodClass, Mode, RequestFacts},
     token::{TOKEN_LEN, Token},
@@ -110,7 +112,7 @@ pub use crate::{
 };
 
 #[cfg(feature = "std")]
-pub use crate::pad::OsPads;
+pub use crate::{once::MemoryStore, pad::OsPads};
 
 /// Crate version string, populated by Cargo at build time.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

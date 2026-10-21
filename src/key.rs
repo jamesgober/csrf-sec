@@ -27,6 +27,8 @@ pub const MAX_KEYS: usize = 16;
 
 /// Subkey label for session tokens.
 const LABEL_SESSION: &[u8] = b"csrf-sec/v1 session-token mac key";
+/// Subkey label for one-time tokens.
+const LABEL_ONCE: &[u8] = b"csrf-sec/v1 one-time-token mac key";
 
 /// Identifies a key in the ring. It is written into every token, so a token
 /// says which key signed it.
@@ -65,6 +67,8 @@ pub(crate) enum Role {
 pub(crate) enum Kind {
     /// Per-session token (format version 1).
     Session,
+    /// One-time token (format version 2).
+    Once,
 }
 
 /// One key in the ring: its id, role, and derived subkeys.
@@ -73,6 +77,7 @@ pub(crate) struct Slot {
     pub(crate) id: KeyId,
     pub(crate) role: Role,
     session: Zeroizing<[u8; KEY_LEN]>,
+    once: Zeroizing<[u8; KEY_LEN]>,
 }
 
 impl Slot {
@@ -85,6 +90,7 @@ impl Slot {
             id,
             role,
             session: derive_subkey(key, LABEL_SESSION, id),
+            once: derive_subkey(key, LABEL_ONCE, id),
         })
     }
 
@@ -93,6 +99,7 @@ impl Slot {
     pub(crate) fn subkey(&self, kind: Kind) -> &[u8; KEY_LEN] {
         match kind {
             Kind::Session => &self.session,
+            Kind::Once => &self.once,
         }
     }
 
@@ -260,9 +267,10 @@ mod tests {
     }
 
     #[test]
-    fn test_slot_subkeys_differ_by_id() {
+    fn test_slot_subkeys_differ_by_kind_and_id() {
         let a = Slot::derive(KeyId(1), Role::Signing, &key(9)).unwrap();
         let b = Slot::derive(KeyId(2), Role::Signing, &key(9)).unwrap();
+        assert_ne!(a.subkey(Kind::Session), a.subkey(Kind::Once));
         assert_ne!(a.subkey(Kind::Session), b.subkey(Kind::Session));
         assert_ne!(
             a.subkey(Kind::Session),

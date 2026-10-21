@@ -13,6 +13,41 @@
 
 ---
 
+## [0.4.0] - 2026-10-21
+
+One-time tokens.
+
+### Added
+
+- `Binding::once(&store)` makes a token one-time: format version 2, a 128-bit
+  nonce inside the MAC, its own subkey, 102 characters (`ONCE_TOKEN_LEN`).
+  The MAC, validity window, and scope are checked before the store is
+  consulted, so forged requests never reach it.
+- `NonceStore` trait with one atomic call, `consume(&NonceUse)`, that records
+  a used nonce and passes only its first use; `NonceUse` and `StoreError`.
+  Issuing never touches the store.
+- `MemoryStore` (feature `std`): 64 shards, bounded, expiring, refuses when
+  full, and refuses tokens issued before it started so a restart cannot replay
+  a used token. `MemoryStore::starting_at` for an explicit start.
+- `Reason::AlreadyUsed` (severity 20) and `Reason::StoreUnavailable` (5); store
+  failures fail closed.
+- `NONCE_LEN` constant.
+- Tests: single use, independence of many tokens, the record a store receives,
+  a spy store proving forged and mismatched tokens never reach it and issuing
+  never calls it, a failing store, a full store, a restarted store, exactly one
+  winner among concurrent verifies, every mode, rotation, zero allocation on
+  the one-time path, and an independent reimplementation of the version-2
+  format.
+
+### Changed
+
+- The store design from the `0.2.0` design lock (`insert` on issue, `take` on
+  verify) is replaced by `consume` on verify only: the MAC already proves
+  issuance, so the store records only used tokens (PLAN D-035).
+- In `PolicyOnly` mode, a one-time binding still checks the token.
+
+---
+
 ## [0.3.0] - 2026-10-21
 
 The core. Session tokens, the request origin policy, modes, the builder, key
@@ -97,7 +132,8 @@ The scaffold and the plan. No functional code yet.
   keys and rotation, verdicts, threats T1-T15, architecture, ecosystem, open
   decisions, decision log), `dev/DIRECTIVES.md`, and `dev/ROADMAP.md`.
 
-[Unreleased]: https://github.com/jamesgober/csrf-sec/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/jamesgober/csrf-sec/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/jamesgober/csrf-sec/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/jamesgober/csrf-sec/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/jamesgober/csrf-sec/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/jamesgober/csrf-sec/releases/tag/v0.1.0

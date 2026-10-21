@@ -9,10 +9,11 @@ use crate::{
     binding::Binding,
     error::Error,
     key::{KEY_LEN, KeyId, Ring, Role, Slot},
+    once::{NONCE_LEN, NonceUse},
     pad::PadSource,
     policy::{Mode, Policy, RequestFacts},
-    token::{self, SESSION, Token, Window},
-    verdict::{OriginCheck, Verdict, Verified},
+    token::{self, ONCE, SESSION, Token, Window},
+    verdict::{OriginCheck, Reason, Rejected, Verdict, Verified},
 };
 
 /// Default token lifetime: 12 hours.
@@ -114,6 +115,9 @@ impl Csrf {
     /// Issue a token for `binding` at `now` (unix seconds), masked with bytes
     /// from `pads`. Works without `std`.
     ///
+    /// For a one-time binding ([`Binding::once`]) the nonce also comes from
+    /// `pads`. Issuing never touches the store.
+    ///
     /// # Errors
     ///
     /// [`Error::EmptySession`] for an empty session id, [`Error::Clock`] when
@@ -129,13 +133,40 @@ impl Csrf {
             return Err(Error::EmptySession);
         }
         let issued_at = token::issued_at(now)?;
-        token::issue(SESSION, self.ring.signing(), binding, issued_at, &[], pads)
+        let slot = self.ring.signing();
+        if binding.store.is_none() {
+            return token::issue(SESSION, slot, binding, issued_at, &[], pads);
+        }
+        let mut nonce = [0u8; NONCE_LEN];
+        pads.fill(&mut nonce)?;
+        token::issue(ONCE, slot, binding, issued_at, &nonce, pads)
     }
 
     /// Verify a token against `binding` at `now` (unix seconds). Layer 2 only.
     /// Works without `std`.
+    ///
+    /// For a one-time binding, the store records the nonce as used only after
+    /// the MAC, the validity window, and the scope passed.
     pub fn verify_at(&self, binding: &Binding<'_>, token: &[u8], now: u64) -> Verdict {
-        token::verify_session(&self.ring, self.window, binding, token, now)
+        let Some(store) = binding.store else {
+            return token::verify_session(&self.ring, self.window, binding, token, now);
+        };
+        let opened = token::open(ONCE, &self.ring, self.window, binding, token, now)?;
+        let issued_at = opened.issued_at();
+        let use_ = NonceUse {
+            session: binding.session,
+            nonce: opened.nonce(),
+            issued_at,
+            expires_at: issued_at
+                .saturating_add(u64::from(self.window.lifetime))
+                .saturating_add(u64::from(self.window.skew)),
+            now,
+        };
+        match store.consume(&use_) {
+            Ok(true) => Ok(opened.verified()),
+            Ok(false) => Err(Rejected::new(Reason::AlreadyUsed)),
+            Err(_) => Err(Rejected::new(Reason::StoreUnavailable)),
+        }
     }
 
     /// The request origin policy alone (layer 1), whatever the mode.
@@ -151,7 +182,9 @@ impl Csrf {
     /// Check a request at `now` (unix seconds): the policy and the token,
     /// combined by the mode. Works without `std`.
     ///
-    /// Safe methods (`GET`, `HEAD`, `OPTIONS`) pass without a token.
+    /// Safe methods (`GET`, `HEAD`, `OPTIONS`) pass without a token. A
+    /// one-time binding always checks the token: in `PolicyOnly` mode it is
+    /// checked after the policy, as in `Strict`.
     pub fn check_at(
         &self,
         facts: &RequestFacts<'_>,
@@ -174,10 +207,14 @@ impl Csrf {
                 }
                 self.verify_at(binding, token, now)
             }
-            Mode::PolicyOnly => self
-                .policy
-                .decide_strict_metadata(facts)
-                .map(Verified::policy),
+            Mode::PolicyOnly => {
+                let origin = self.policy.decide_strict_metadata(facts)?;
+                if binding.store.is_none() || origin == OriginCheck::SafeMethod {
+                    return Ok(Verified::policy(origin));
+                }
+                self.verify_at(binding, token, now)
+                    .map(|v| v.with_origin_check(origin))
+            }
         }
     }
 
