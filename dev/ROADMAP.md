@@ -37,11 +37,13 @@ Exit: a one-time token passes exactly once; forged one-time tokens never reach t
 - [x] A spy store proves forged, wrong-session, wrong-scope, expired, and malformed tokens never reach `consume`, and issuing never calls it.
 - [x] Zero allocation on the one-time path with an allocation-free store.
 
-## v0.5.0 - Feature complete
+## v0.5.0 - Feature complete (DONE, 2026-10-21)
 Exit: every planned feature present and tested; the `no_std` core builds for a bare-metal target in CI.
-- [ ] Bare-metal `no_std` build check in CI.
-- [ ] Ideas from `PLAN.md` section 15 tried: key fingerprints, the simple-content-type fact, session epoch binding; each adopted with tests or rejected with the reason recorded.
-- [ ] README in full form; examples for each tier, including `no_std`.
+- [x] Bare-metal `no_std` build check in CI (`thumbv7em-none-eabi`, stable and 1.85).
+- [x] Ideas from `PLAN.md` section 15 resolved: key fingerprints and ring introspection adopted; detection guidance adopted as docs; session epoch, audience, custom-header, simple-content-type, and store-free replay filter rejected with reasons (D-041 to D-047).
+- [x] Recipes: no server session, revoking a session's tokens, tenants, single-page applications, logging.
+- [x] README in full form; examples for each tier (`basic`, `rotation`, `tier3`).
+- [x] `Send + Sync` asserted for every public type.
 
 ## v0.6.0 - Optimization
 Exit: measured numbers replace every estimate in the docs; at least 20% faster than the best competitor at equal or stronger security.

@@ -29,7 +29,7 @@
         <strong>MSRV is 1.85+</strong> (Rust 2024 edition). <code>#![forbid(unsafe_code)]</code>. <code>no_std</code> core (with <code>alloc</code>).
     </p>
     <blockquote>
-        <strong>Status: <code>0.4.0</code>.</strong> Session tokens, one-time tokens, the request origin policy, modes, the builder, key rotation, and all three API tiers are built and tested. Benchmarks against other CSRF crates arrive in <code>0.6.0</code>; the hardening phase (fuzzing, timing tests, an attack test per threat) in <code>0.7.0</code>. The schedule is <a href="./dev/ROADMAP.md"><code>dev/ROADMAP.md</code></a>.
+        <strong>Status: <code>0.5.0</code>, feature complete.</strong> Session tokens, one-time tokens, the request origin policy, modes, the builder, key rotation and ring introspection, and all three API tiers are built and tested; the core builds for bare-metal targets. Benchmarks against other CSRF crates arrive in <code>0.6.0</code>; the hardening phase (fuzzing, timing tests, an attack test per threat) in <code>0.7.0</code>. The schedule is <a href="./dev/ROADMAP.md"><code>dev/ROADMAP.md</code></a>.
     </blockquote>
 </div>
 
@@ -40,7 +40,7 @@
 
 ```toml
 [dependencies]
-csrf-sec = "0.4.0"
+csrf-sec = "0.5.0"
 ```
 
 ## Quick Start
@@ -87,7 +87,7 @@ Costs are estimates until `0.6.0` replaces them with measurements. Zero allocati
 - **Three API tiers.** Tier 1: `Csrf::new`, `issue`, `verify`, `check`. Tier 2: a `Binding` (scope, previous session) and a builder. Tier 3: explicit time and randomness, no `std` required.
 - **Accurate reasons.** The MAC is checked first, so a forged token is never reported as expired, and an expired real token is never reported as forged. A tab opened before login reports `stale_session` (benign), not `bad_mac` (forgery).
 - **One-time tokens** for high-value actions, through a `NonceStore` you choose. Issuing never touches the store, which records only used tokens; the MAC is checked first, so a forged request can neither burn a user's token nor load a shared store.
-- **Rotation that logs nobody out.** Signing, accepted (staged), and retired keys; two-step rotation for clusters, so no node ever sees a token from a key it does not know.
+- **Rotation that logs nobody out.** Signing, accepted (staged), and retired keys; two-step rotation for clusters, so no node ever sees a token from a key it does not know; public key fingerprints to confirm every node holds the same ring.
 - **Stateless by default.** Any node with the key ring verifies any session token; no shared store, no replication, no bottleneck. Only one-time tokens use a store.
 - **Constant time where it matters.** The tag comparison and the base64url codec (no lookup tables); canonical text only, so any changed character fails.
 - **Fail closed.** If the clock or the random generator fails, no token is issued; nothing panics.
@@ -103,7 +103,7 @@ Cross-site scripting defeats every CSRF defence, because script on the page can 
 
 ## Documentation
 
-- [`docs/API.md`](./docs/API.md): the API by task, every example compiled as a test.
+- [`docs/API.md`](./docs/API.md): the API by task, with recipes (no server session, single-page apps, tenants, logging), every example compiled as a test.
 - [docs.rs/csrf-sec](https://docs.rs/csrf-sec): item reference.
 - [`dev/PLAN.md`](./dev/PLAN.md): the design, threats T1-T15 with defence and cost, and the decision log.
 - [`CHANGELOG.md`](./CHANGELOG.md).

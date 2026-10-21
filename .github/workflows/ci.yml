@@ -52,6 +52,26 @@ jobs:
         env:
           RUSTDOCFLAGS: "-D warnings"
 
+  no_std:
+    name: no_std (bare metal, ${{ matrix.rust }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        rust: [stable, "1.85"]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.rust }}
+          targets: thumbv7em-none-eabi
+      - uses: Swatinem/rust-cache@v2
+      # A target with no standard library at all: proves the core is no_std.
+      - name: Build (no default features)
+        run: cargo build --no-default-features --target thumbv7em-none-eabi
+      - name: Build (alloc)
+        run: cargo build --no-default-features --features alloc --target thumbv7em-none-eabi
+
   security:
     name: Security (audit + deny)
     runs-on: ubuntu-latest

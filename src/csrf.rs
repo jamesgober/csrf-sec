@@ -8,7 +8,7 @@ use crypt_io::Zeroizing;
 use crate::{
     binding::Binding,
     error::Error,
-    key::{KEY_LEN, KeyId, Ring, Role, Slot},
+    key::{KEY_LEN, KeyFingerprint, KeyId, KeyInfo, KeyRole, Ring, Slot},
     once::{NONCE_LEN, NonceUse},
     pad::PadSource,
     policy::{Mode, Policy, RequestFacts},
@@ -90,6 +90,24 @@ impl Csrf {
     #[must_use]
     pub fn accepts_at(&self, id: KeyId, now: u64) -> bool {
         self.ring.accepts(id, now)
+    }
+
+    /// The keys in the ring, signing key first: id, role, and public
+    /// fingerprint. For operations dashboards and cross-node consistency
+    /// checks; no key material is exposed.
+    pub fn keys(&self) -> impl Iterator<Item = KeyInfo> + '_ {
+        self.ring.slots().iter().map(Slot::info)
+    }
+
+    /// The public fingerprint of key `id`, if it is in the ring (whatever its
+    /// role or retire time).
+    #[must_use]
+    pub fn key_fingerprint(&self, id: KeyId) -> Option<KeyFingerprint> {
+        self.ring
+            .slots()
+            .iter()
+            .find(|s| s.id == id)
+            .map(Slot::fingerprint)
     }
 
     /// The mode.
@@ -230,7 +248,7 @@ impl Csrf {
     /// by another key, [`Error::TooManyKeys`].
     pub fn rotated_at(&self, id: KeyId, key: [u8; KEY_LEN], now: u64) -> Result<Self, Error> {
         let key = Zeroizing::new(key);
-        let slot = Slot::derive(id, Role::Signing, &key)?;
+        let slot = Slot::derive(id, KeyRole::Signing, &key)?;
         let retire_at = now
             .saturating_add(u64::from(self.window.lifetime))
             .saturating_add(u64::from(self.window.skew));
@@ -342,7 +360,7 @@ impl fmt::Debug for Csrf {
 /// A key handed to the builder, wiped when the builder is dropped.
 struct PendingKey {
     id: KeyId,
-    role: Role,
+    role: KeyRole,
     key: Zeroizing<[u8; KEY_LEN]>,
 }
 
@@ -393,7 +411,7 @@ impl Default for Builder {
 }
 
 impl Builder {
-    fn push(mut self, id: KeyId, role: Role, key: [u8; KEY_LEN]) -> Self {
+    fn push(mut self, id: KeyId, role: KeyRole, key: [u8; KEY_LEN]) -> Self {
         self.keys.push(PendingKey {
             id,
             role,
@@ -406,14 +424,14 @@ impl Builder {
     /// required.
     #[must_use]
     pub fn key(self, id: KeyId, key: [u8; KEY_LEN]) -> Self {
-        self.push(id, Role::Signing, key)
+        self.push(id, KeyRole::Signing, key)
     }
 
     /// A key that verifies but does not sign, with no end. Stage a new key on
     /// every node of a cluster with `accept` before any node signs with it.
     #[must_use]
     pub fn accept(self, id: KeyId, key: [u8; KEY_LEN]) -> Self {
-        self.push(id, Role::Accepted, key)
+        self.push(id, KeyRole::Accepted, key)
     }
 
     /// A key that verifies until `retire_at` (unix seconds), then is refused
@@ -421,7 +439,7 @@ impl Builder {
     /// least one lifetime plus skew after the key stopped signing.
     #[must_use]
     pub fn retired(self, id: KeyId, key: [u8; KEY_LEN], retire_at: u64) -> Self {
-        self.push(id, Role::Retired { until: retire_at }, key)
+        self.push(id, KeyRole::Retired { until: retire_at }, key)
     }
 
     /// How long a token stays valid after it is issued (default 12 hours;
@@ -506,7 +524,7 @@ impl Builder {
 
 impl fmt::Debug for Builder {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let keys: Vec<(KeyId, Role)> = self.keys.iter().map(|k| (k.id, k.role)).collect();
+        let keys: Vec<(KeyId, KeyRole)> = self.keys.iter().map(|k| (k.id, k.role)).collect();
         f.debug_struct("Builder")
             .field("keys", &keys)
             .field("lifetime", &self.lifetime)
@@ -541,6 +559,48 @@ mod tests {
 
     fn issue(c: &Csrf, b: &Binding<'_>, now: u64) -> crate::Token {
         c.issue_at(b, now, &mut Counter(1)).unwrap()
+    }
+
+    #[test]
+    fn test_public_types_are_send_and_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<Csrf>();
+        assert_send_sync::<crate::Builder>();
+        assert_send_sync::<crate::Token>();
+        assert_send_sync::<crate::Rejected>();
+        assert_send_sync::<crate::Verified>();
+        assert_send_sync::<crate::RequestFacts<'static>>();
+        assert_send_sync::<crate::KeyInfo>();
+        #[cfg(feature = "std")]
+        assert_send_sync::<crate::MemoryStore>();
+    }
+
+    #[test]
+    fn test_keys_lists_ring_signing_first() {
+        let c = Csrf::builder()
+            .accept(KeyId(5), K2)
+            .key(KeyId(4), K1)
+            .retired(KeyId(3), K3, NOW)
+            .build()
+            .unwrap();
+        let keys: Vec<_> = c.keys().collect();
+        assert_eq!(keys.len(), 3);
+        assert_eq!(keys[0].id(), KeyId(4));
+        assert_eq!(keys[0].role(), crate::KeyRole::Signing);
+        assert!(
+            keys.iter()
+                .any(|k| k.role() == crate::KeyRole::Retired { until: NOW })
+        );
+        assert_eq!(
+            c.key_fingerprint(KeyId(5)),
+            Some(
+                keys.iter()
+                    .find(|k| k.id() == KeyId(5))
+                    .unwrap()
+                    .fingerprint()
+            )
+        );
+        assert_eq!(c.key_fingerprint(KeyId(9)), None);
     }
 
     #[test]

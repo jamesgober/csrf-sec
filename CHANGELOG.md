@@ -13,6 +13,32 @@
 
 ---
 
+## [0.5.0] - 2026-10-21
+
+Feature complete.
+
+### Added
+
+- `Csrf::keys()` lists the ring (signing key first) as `KeyInfo` (`id`,
+  `role`, `fingerprint`); `Csrf::key_fingerprint(id)`; `KeyFingerprint`, a
+  public 8-byte fingerprint (16 hex digits) for checking that every node of a
+  cluster holds the same key under an id; `KeyRole` is now public.
+- CI job building the `no_std` core for `thumbv7em-none-eabi`, a target with
+  no standard library, on stable and 1.85.
+- Example `tier3`: explicit time and randomness, runnable with
+  `--no-default-features`.
+- `docs/API.md` recipes: no server session, revoking a session's tokens
+  without changing its id, tenants on one key ring, single-page applications,
+  and what to log on a refusal.
+- Test asserting `Send + Sync` for every public type.
+
+### Changed
+
+- Every idea in the plan is resolved: adopted with tests, or rejected with the
+  reason recorded (PLAN D-041 to D-047).
+
+---
+
 ## [0.4.0] - 2026-10-21
 
 One-time tokens.
@@ -132,7 +158,8 @@ The scaffold and the plan. No functional code yet.
   keys and rotation, verdicts, threats T1-T15, architecture, ecosystem, open
   decisions, decision log), `dev/DIRECTIVES.md`, and `dev/ROADMAP.md`.
 
-[Unreleased]: https://github.com/jamesgober/csrf-sec/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/jamesgober/csrf-sec/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/jamesgober/csrf-sec/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/jamesgober/csrf-sec/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/jamesgober/csrf-sec/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/jamesgober/csrf-sec/compare/v0.1.0...v0.2.0
