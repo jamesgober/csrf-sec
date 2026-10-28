@@ -204,15 +204,22 @@ pub(crate) struct Window {
 }
 
 impl Window {
-    /// Expired when `now > issued + lifetime` (only if tokens expire); not
-    /// yet valid when `issued > now + skew`.
+    /// Expired when `now > issued + lifetime`; without expiry, only when
+    /// `now` is past the last second any expiring token could reach (a time
+    /// in milliseconds, say), so a broken clock still fails closed. Not yet
+    /// valid when `issued > now + skew`.
     #[inline]
     fn check(self, issued_at: u32, now: u64) -> Result<(), Rejected> {
         let issued = EPOCH + u64::from(issued_at);
         if issued > now.saturating_add(u64::from(self.skew)) {
             return Err(Rejected::new(Reason::NotYetValid));
         }
-        if self.expires && now > issued + u64::from(self.lifetime) {
+        let last = if self.expires {
+            issued + u64::from(self.lifetime)
+        } else {
+            EPOCH + u64::from(u32::MAX) + u64::from(self.lifetime) + u64::from(self.skew)
+        };
+        if now > last {
             return Err(Rejected::new(Reason::Expired));
         }
         Ok(())

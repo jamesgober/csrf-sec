@@ -13,6 +13,8 @@ use crate::once::NonceStore;
 /// - **Session.** Your session id, or any per-session secret. It goes into the
 ///   MAC and never into the token, so the token reveals nothing about it.
 ///   Bind login forms to the guest session, and issue a new token after login.
+///   Never a user or account id, which outlives every session: with
+///   [`no_expiry`](crate::Builder::no_expiry) such a token would never die.
 /// - **Scope.** Binds a token to one action (`"POST /account/email"`). It then
 ///   verifies only for that scope.
 /// - **Previous session.** After a login rotates the session id, tabs opened
@@ -79,7 +81,8 @@ impl<'a> Binding<'a> {
     /// [`Reason::AlreadyUsed`](crate::Reason::AlreadyUsed). Issuing does not
     /// touch the store. One-time tokens are
     /// [`ONCE_TOKEN_LEN`](crate::ONCE_TOKEN_LEN) characters. A one-time binding
-    /// always checks the token, whatever the [`Mode`](crate::Mode).
+    /// always checks and consumes the token, whatever the method (a one-time
+    /// `GET` link, say) and the [`Mode`](crate::Mode).
     #[must_use]
     pub fn once(mut self, store: &'a dyn NonceStore) -> Self {
         self.store = Some(store);

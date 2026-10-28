@@ -145,6 +145,32 @@ jobs:
       - name: Mutants in the changed code
         run: cargo mutants --no-shuffle --in-diff pr.diff -- --lib --tests
 
+  reference:
+    name: Token vectors (independent implementation)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      # A second implementation of the token format, in Python with its own
+      # BLAKE3, must reproduce every vector the crate's tests pin.
+      - name: Rebuild every vector from the format description
+        run: python3 dev/reference/vectors.py
+
+  semver:
+    name: API compatibility (cargo semver-checks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install cargo-semver-checks
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-semver-checks
+      # Compares the public API with the latest release on crates.io; a
+      # breaking change fails unless the version bump allows it.
+      - name: Check against the last release
+        run: cargo semver-checks check-release
+
   security:
     name: Security (audit + deny)
     runs-on: ubuntu-latest

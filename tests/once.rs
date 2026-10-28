@@ -340,13 +340,19 @@ fn test_once_binding_checks_the_token_in_every_mode() {
             "{mode:?}"
         );
     }
-    // A safe method still needs nothing.
+    // A safe method needs nothing on a plain binding, but a one-time binding
+    // always checks its token (D-093).
     let c = Csrf::builder()
         .key(KeyId(0), KEY)
         .mode(Mode::PolicyOnly)
         .build()
         .unwrap();
-    assert!(c.check_at(&RequestFacts::new("GET"), &b, b"", NOW).is_ok());
+    let get = RequestFacts::new("GET");
+    assert!(c.check_at(&get, &Binding::new("s"), b"", NOW).is_ok());
+    assert_eq!(
+        c.check_at(&get, &b, b"", NOW).unwrap_err().reason(),
+        Reason::Missing
+    );
 }
 
 #[test]

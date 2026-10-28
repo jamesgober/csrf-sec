@@ -218,10 +218,11 @@ proptest! {
         let _ = c.check_at(&facts, &Binding::new("s"), b"", NOW);
     }
 
-    /// Without expiry a token passes at any later time and is still refused
-    /// when issued further ahead than the skew.
+    /// Without expiry a token passes at any later time a token can reach, is
+    /// refused past that (a broken clock), and is still refused when issued
+    /// further ahead than the skew.
     #[test]
-    fn prop_no_expiry_window(later in 0u64..4_000_000_000, issued in 0u64..1_000_000_000, seed in any::<u64>()) {
+    fn prop_no_expiry_window(later in 0u64..3_000_000_000, issued in 0u64..1_000_000_000, seed in any::<u64>()) {
         let c = Csrf::builder()
             .key(KeyId(0), *b"window property key, 32 bytes!!!")
             .no_expiry()
@@ -231,6 +232,9 @@ proptest! {
         let b = Binding::new("s");
         let t = c.issue_at(&b, at, &mut SeedPads(seed)).unwrap();
         prop_assert!(c.verify_at(&b, t.as_bytes(), at + later).is_ok());
+        let last = 1_577_836_800 + u64::from(u32::MAX) + 12 * 3_600 + 60;
+        prop_assert!(c.verify_at(&b, t.as_bytes(), last).is_ok());
+        prop_assert_eq!(c.verify_at(&b, t.as_bytes(), last + 1).unwrap_err().reason(), Reason::Expired);
         prop_assert_eq!(c.verify_at(&b, t.as_bytes(), at - 61).unwrap_err().reason(), Reason::NotYetValid);
     }
 

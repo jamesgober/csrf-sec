@@ -90,12 +90,12 @@ Exit: an independent adversarial review with every finding fixed test-first; the
 - [ ] **The API names, signed off by James.** Every public name is one to live with until 2.0: `Csrf`, `Binding`, `once`, `previous_session`, `check_with`, `no_expiry`, `RequestFacts`, `Reason` names.
 
 **Locked down**
-- [ ] **Token test vectors.** A committed table of fixed key, session, scope, time, and pad giving exact token text, for both layouts, checked by a test, so a change to the format cannot pass CI unnoticed.
-- [ ] **`cargo semver-checks` in CI**, against the last 0.9 release, so no release can break the API by accident.
-- [ ] **`SECURITY.md`.** How to report a vulnerability privately, which versions get fixes, and what response to expect.
+- [x] **Token test vectors.** Eight tokens and a fingerprint from fixed inputs (`tests/vectors.rs`, `docs/TEST_VECTORS.md`), rebuilt in CI by an independent Python implementation with its own BLAKE3 (`dev/reference/vectors.py`, D-091).
+- [x] **`cargo semver-checks` in CI**, against the last release on crates.io.
+- [x] **`SECURITY.md`.** Private reporting by email, supported versions, response times. (GitHub's private vulnerability reporting is off for the repository; turning it on is a repository setting for James.)
 
 **Checked again on the final commit**
-- [ ] **A third adversarial review**, of everything since the second (optional expiry and its interaction with rotation, the audit changes), with every finding fixed test-first.
+- [x] **A third adversarial review**, of everything since the second: no forgery; one replay after a configuration change (`no_expiry` moved the default one-time lifetime), one-time `GET` not checked, rotation grace for long one-time tokens, a clock bound, and doc gaps, all fixed test-first in 0.9.2 (`tests/review.rs`, `r3_*`; PLAN D-092 to D-097). Any code change after this needs its own review before 1.0.
 - [ ] **Long fuzzing**: hours per target, not the CI smoke run, with no finding.
 - [ ] **The full gate on the release commit**: all platforms and toolchains, mutation testing over the whole crate, the long constant-time run, benchmarks re-measured and `PERFORMANCE.md` updated, every doc claim still true.
 

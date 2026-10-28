@@ -13,6 +13,52 @@
 
 ---
 
+## [0.9.2] - 2026-10-28
+
+A third adversarial review, of 0.9.1's optional expiry and everything since
+the second review, found no way to forge a pass. It found one way to pass a
+one-time token twice after a configuration change, fixed here with the rest
+of its findings, each with a test that failed first (`tests/review.rs`,
+`r3_*`). Also: fixed token vectors checked by an independent implementation,
+`cargo semver-checks` in CI, and `SECURITY.md`.
+
+### Security
+
+- `no_expiry` no longer changes the default one-time lifetime. It had raised
+  it from the lifetime (when shorter than an hour) to an hour, so two nodes
+  sharing a store, or an old and a new `Csrf` around one store, could
+  disagree, and a used one-time token passed again once the shorter-lived
+  record was purged.
+- A one-time binding now checks and consumes its token on safe methods too,
+  in every mode, as the documentation said. A one-time `GET` link (an email
+  confirmation, say) passed `check` without its token before.
+- Rotation keeps the old key for the longest token lifetime: the one-time
+  lifetime when it is longer than the lifetime (possible with `no_expiry`),
+  so outstanding one-time tokens are not refused early. `Builder::retired`'s
+  limit follows the same rule.
+- With `no_expiry`, a clock past 2156 (a time in milliseconds, say) is
+  refused as `expired`, as it is with expiry on.
+
+### Added
+
+- Token test vectors: eight tokens across both layouts and a key fingerprint,
+  from fixed inputs (`tests/vectors.rs`, `docs/TEST_VECTORS.md`). An
+  independent implementation of the format in Python, with its own BLAKE3,
+  rebuilds every vector in CI (`dev/reference/vectors.py`).
+- CI: `cargo semver-checks` against the last release, so no release can
+  break the API by accident.
+- `SECURITY.md`: how to report a vulnerability privately, and what to expect.
+
+### Fixed
+
+- Documentation: under `no_expiry` the session value must be regenerated at
+  login, never reissued after logout, and never a user or account id;
+  rotation with `no_expiry` ends forms older than the grace; clusters should
+  set `once_lifetime` explicitly and compare it across nodes; the minimal
+  `NonceStore` example is marked as test-only (it never forgets).
+
+---
+
 ## [0.9.1] - 2026-10-21
 
 The 1.0 audit, the design checked against OWASP's CSRF Prevention Cheat Sheet,
@@ -352,7 +398,8 @@ The scaffold and the plan. No functional code yet.
   keys and rotation, verdicts, threats T1-T15, architecture, ecosystem, open
   decisions, decision log), `dev/DIRECTIVES.md`, and `dev/ROADMAP.md`.
 
-[Unreleased]: https://github.com/jamesgober/csrf-sec/compare/v0.9.1...HEAD
+[Unreleased]: https://github.com/jamesgober/csrf-sec/compare/v0.9.2...HEAD
+[0.9.2]: https://github.com/jamesgober/csrf-sec/compare/v0.9.1...v0.9.2
 [0.9.1]: https://github.com/jamesgober/csrf-sec/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/jamesgober/csrf-sec/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/jamesgober/csrf-sec/compare/v0.7.0...v0.8.0
