@@ -16,7 +16,7 @@
 
 A task-oriented tour of the API, Tier 1 first. The rustdoc on [docs.rs](https://docs.rs/csrf-sec) is the item-by-item reference. Every `rust` example in this file is compiled and run as a doctest, so it matches the build; lines starting with `#` are setup hidden in rustdoc.
 
-> **Status: `0.9.1`, release candidate.** The API on this page is the 1.0 candidate; `1.0` will freeze it (additions only until `2.0`) and the token format, on the terms in the README. Every cost below is a measurement from [`PERFORMANCE.md`](./PERFORMANCE.md) (Linux, Ryzen 9 9950X3D) unless marked as an estimate.
+> **Status: `0.9.2`, release candidate.** The API on this page is the 1.0 candidate; `1.0` will freeze it (additions only until `2.0`) and the token format, on the terms in the README. Every cost below is a measurement from [`PERFORMANCE.md`](./PERFORMANCE.md) (Linux, Ryzen 9 9950X3D) unless marked as an estimate.
 
 - [Setup](#setup)
 - [Tier 1: three calls](#tier-1-three-calls)
@@ -141,7 +141,7 @@ impl Csrf {
 }
 ```
 
-- **Session.** The value every token is bound to: your session id, or any per-session secret. It goes into the MAC and never into the token, so the token reveals nothing about the session. Bind to the pre-login (guest) session on login forms, and issue a new token after login (T2, login CSRF).
+- **Session.** The value every token is bound to: your session id, or any per-session secret. It goes into the MAC and never into the token, so the token reveals nothing about the session. Bind to the pre-login (guest) session on login forms, and issue a new token after login (T2, login CSRF). Never bind to a user or account id, which outlives every session.
 - **Scope.** Binds a token to one action, for high-value forms:
 
   ```rust
@@ -288,7 +288,7 @@ impl Builder {
     pub fn retired(self, id: KeyId, key: [u8; 32], retire_at: u64) -> Self; // verifies while now < retire_at (unix seconds)
     pub fn lifetime(self, lifetime: Duration) -> Self;                      // default 12 hours
     pub fn no_expiry(self) -> Self;                                         // tokens live as long as their session
-    pub fn once_lifetime(self, lifetime: Duration) -> Self;                 // default 1 hour, at most the lifetime (unless no_expiry)
+    pub fn once_lifetime(self, lifetime: Duration) -> Self;                 // default 1 hour or the lifetime if shorter; at most the lifetime unless no_expiry
     pub fn skew(self, skew: Duration) -> Self;                              // default 60 seconds
     pub fn mode(self, mode: Mode) -> Self;                                  // default Strict
     pub fn allow_origin(self, origin: &str) -> Self;
@@ -318,7 +318,7 @@ let csrf = Csrf::builder()
 # }
 ```
 
-- **Expiry is a choice.** By default a token expires twelve hours after it is issued (`lifetime`), which caps how long a leaked token is any use. `no_expiry()` makes a token live as long as the session id it is bound to, the per-session token OWASP describes: your session layer ends it, by rotating the session id at login and ending the session at logout. The issue time is still checked against the skew, a rotated-out key still stops verifying one `lifetime` plus skew after rotation, and one-time tokens always expire. The trade-off is that a token that leaks stays usable for the rest of its session.
+- **Expiry is a choice.** By default a token expires twelve hours after it is issued (`lifetime`), which caps how long a leaked token is any use. `no_expiry()` makes a token live as long as the session id it is bound to, the per-session token OWASP describes: your session layer ends it, by rotating the session id at login and ending the session at logout. So the session value must be regenerated at login, never reissued after logout, and never a user or account id. The issue time is still checked against the skew (and a clock past 2156 is refused), a rotated-out key still stops verifying one `lifetime` (or the one-time lifetime, if longer) plus skew after rotation, and one-time tokens always expire; the default one-time lifetime is the same with or without expiry. The trade-off is that a token that leaks stays usable for the rest of its session.
 
   ```rust
   # use csrf_sec::{Csrf, KeyId};
@@ -333,7 +333,7 @@ let csrf = Csrf::builder()
   ```
 - **Keys are 32 bytes and must be persisted** (or derived from a persisted master, for example a key-vault secret through HKDF). A key generated at boot makes every open form fail after a restart. Keys whose bytes are all equal (an unset buffer) are refused.
 - csrf-sec never MACs with your key directly: it derives one subkey per key id at construction, keeps only that, and wipes it when the `Csrf` is dropped. The key bytes handed to the builder are wiped when the builder is dropped, and the builder's key buffer is reserved for `MAX_KEYS` up front and never grows, so no reallocation leaves a heap copy behind. (Copies a move leaves on the stack, as with any Rust value, are out of reach of safe code.)
-- **Rotation on one node:** `csrf.rotated(KeyId(4), new_key)?` returns a new `Csrf` that signs with key 4 and keeps the old signing key as retired for one token lifetime plus skew from now, through the last second of the last token it could have signed. Swap it in; nobody is logged out and no open form fails. `rotated` reads the clock to set the retire time, and refuses with `Error::Clock` when the clock is outside 2020 to 2156; for an emergency rotation on a host whose clock is broken, build a new `Csrf` with the builder instead (`.key(new_id, new_key)`, leaving the compromised key out).
+- **Rotation on one node:** `csrf.rotated(KeyId(4), new_key)?` returns a new `Csrf` that signs with key 4 and keeps the old signing key as retired for one token lifetime (or the one-time lifetime, if longer) plus skew from now, through the last second of the last token it could have signed. Swap it in; nobody is logged out and no open form fails. (With `no_expiry`, forms older than that fail as `unknown_key` and must be reloaded: rotation is what ends their tokens.) `rotated` reads the clock to set the retire time, and refuses with `Error::Clock` when the clock is outside 2020 to 2156; for an emergency rotation on a host whose clock is broken, build a new `Csrf` with the builder instead (`.key(new_id, new_key)`, leaving the compromised key out).
 - **Rotation across a cluster, in two steps:** first deploy the new key everywhere with `.accept(id, key)` (verify only); once every node has it, make it the signing key with `.key(id, key)` and move the old one to `.retired(..)`. A node never receives a token signed with a key it does not know. On a node built with the accepted key, `rotated(id, same_key)` promotes it.
 - Key ids are never reused while tokens signed under them can still be presented: the builder and `rotated` refuse an id still in use. Up to `MAX_KEYS` (16) keys at once.
 
@@ -414,7 +414,7 @@ assert_eq!(again.unwrap_err().reason(), Reason::AlreadyUsed);
 
 A one-time token is a signed token with a 128-bit random nonce inside the MAC (format version 2, its own subkey). Because the MAC already proves the token came from this key ring, the store does not need to know which tokens were issued: **it only records nonces when they are used**. Issuing never touches the store, so rendering a page costs no store write, and the store holds only tokens that were actually submitted.
 
-**The MAC, lifetime, and scope are checked before the store is consulted**, so forged requests never reach it: they cannot burn a user's token and cannot load a shared store. A one-time binding always checks the token, whatever the mode.
+**The MAC, lifetime, and scope are checked before the store is consulted**, so forged requests never reach it: they cannot burn a user's token and cannot load a shared store. A one-time binding always checks and consumes the token, whatever the method and the mode, so a one-time `GET` link (an email confirmation, say) is checked too.
 
 ```rust,ignore
 pub trait NonceStore {
@@ -449,15 +449,17 @@ impl MemoryStore {
 }
 ```
 
-One-time tokens have their own lifetime: one hour by default (`Builder::once_lifetime`, never longer than the general lifetime), so their records, and anything an abuser can do with them, last an hour and a minute rather than twelve hours.
+One-time tokens have their own lifetime: one hour by default, or the general lifetime if shorter (`Builder::once_lifetime`; never longer than the general lifetime unless `no_expiry` is set), so their records, and anything an abuser can do with them, last an hour and a minute rather than twelve hours.
 
-**Nodes that share a store must use the same one-time lifetime.** The record's expiry is set by the node that consumed the token, from its own `once_lifetime`, and the token does not carry it. A node with a longer one-time lifetime would accept a token again after a shorter-lived node's record expired. Configure it once for the whole cluster, as you do the keys. To change it, switch every node at once, or accept that tokens used during the rollout may be presented once more to the nodes with the longer setting. (Upgrading from 0.8: see the 0.9.0 entry in `CHANGELOG.md`.)
+**Nodes that share a store must use the same one-time lifetime.** The record's expiry is set by the node that consumed the token, from its own `once_lifetime`, and the token does not carry it. A node with a longer one-time lifetime would accept a token again after a shorter-lived node's record expired. Configure it once for the whole cluster, as you do the keys: set it explicitly and compare `once_lifetime()` across nodes, as you compare key fingerprints. To change it, switch every node at once, or accept that tokens used during the rollout may be presented once more to the nodes with the longer setting. (Upgrading from 0.8: see the 0.9.0 entry in `CHANGELOG.md`.)
 
 The store contract: `consume` **atomically** records the nonce and returns `Ok(true)` only for its first use. `Ok(false)` (already recorded, or the store cannot vouch that it was not) refuses the request as `AlreadyUsed`; `Err(StoreError::SessionLimit)` refuses it as `TooManyUses`, and any other `Err` as `StoreUnavailable`. Two concurrent calls for one nonce must not both return `Ok(true)`: in a key-value store, set-if-absent with an expiry of `expires_at`.
 
 `MemoryStore` serves one node and tests: 64 shards, each behind its own short-held lock, with all of one session's records in one shard. **Each session may hold at most 64 records at once** (`with_session_limit`), so one session, even an attacker's, cannot fill the store for everyone else; a session at its limit is refused (`TooManyUses`) until its records expire. Each shard holds at most `capacity / 64` (rounded up) records, and a session at most an eighth of a shard whatever its limit, but always at least one record (`session_limit()` reports the limit in force), so in a store of 512 records or more filling a shard takes at least eight sessions: **size the store at 512 times the session limit or more** (32,768 records, about 2 MB, for the default). When a shard or a session is full, expired records are dropped first; if none has expired, the use is refused at once, without scanning, rather than forgetting a used token: a full session as `TooManyUses`, a full shard as `StoreUnavailable`. A dropped record is remembered by its expiry: a later use expiring no later than a dropped record is refused as `AlreadyUsed`, which never refuses a valid token on a clock that only moves forward, and stops a used token from passing again on a node whose clock stepped back after the purge. About 60 bytes per record [est.].
 
 The per-session limit raises the cost of filling the store; it does not remove it. Many sessions (guest sessions are cheap), each using its quota within the one-time lifetime, can still fill a store, after which one-time actions fail closed for everyone until records expire. The shard is chosen by a keyed hash, so an attacker cannot aim at one user's shard. Rate-limit the issuing of one-time tokens per client or account (a gate's job), and alert on `too_many_uses`. Its memory lives in this process only: so that a restart cannot let a used token pass again, it refuses every token issued at or before its start, and `MemoryStore::new` starts one minute ahead of the clock, which also covers a clock that steps back by up to a minute across the restart. A page rendered in the store's first minute must be reloaded. Where the clock can step back further, persist a high-water mark and use `starting_at`. For a cluster, implement `NonceStore` over a store every node reaches (WASP: the gates' session store).
+
+The smallest correct store, for tests only: it never forgets a nonce, so it grows with every use and is empty again after a restart. A real store expires records at `expires_at` and refuses tokens issued before it started, as `MemoryStore` does.
 
 ```rust
 use std::{collections::HashSet, sync::Mutex};
@@ -668,7 +670,7 @@ match csrf.check(&facts, session_id, form_field) {
 - Refuse with a generic 403. Keep the reason in your logs (`reason().as_str()`, `severity()`), never in the response.
 - Give the session cookie `SameSite=Lax` (or `Strict`), `Secure`, `HttpOnly`, and the `__Host-` prefix.
 - Share one `Csrf` per process (`Arc<Csrf>`). On rotation, build the new value and swap it in; requests in flight keep the one they started with.
-- Load the key from persistent storage. In a cluster, stage a new key with `accept` on every node before any node signs with it, and compare `key_fingerprint` across nodes.
+- Load the key from persistent storage. In a cluster, stage a new key with `accept` on every node before any node signs with it, and compare `key_fingerprint` (and `once_lifetime`) across nodes.
 
 **Real browsers.** The example was checked in a Chromium-based browser: a same-origin form post arrives with `Sec-Fetch-Site: same-origin` and passes on Fetch Metadata; the same post from another site (`127.0.0.1:7879` to `localhost:7878`) arrives with `Sec-Fetch-Site: cross-site` and is refused as `cross_site`; from a sibling origin on the same site (`localhost:7879`) it arrives with `same-site` and is refused unless `allow_same_site` is set.
 
@@ -803,4 +805,4 @@ Unchanged since 0.4 (version 2 was added then); `1.0` freezes it for the 1.x lin
  one-time:   the nonce is drawn from the PadSource before the pad
 ```
 
-Lengths are LEB128 varints, so the encoding is canonical for any length and short inputs (a 43-character session id with no scope) fit in one 64-byte BLAKE3 block. Decoding is constant time and accepts only canonical text: any change to any character of a token makes it fail. `tests/tokens.rs` and `tests/once.rs` rebuild both formats from this description with crypt-io directly and compare them byte for byte with what the crate issues.
+Lengths are LEB128 varints, so the encoding is canonical for any length and short inputs (a 43-character session id with no scope) fit in one 64-byte BLAKE3 block. Decoding is constant time and accepts only canonical text: any change to any character of a token makes it fail. `tests/tokens.rs` and `tests/once.rs` rebuild both formats from this description with crypt-io directly and compare them byte for byte with what the crate issues. Fixed vectors for both layouts are in [`TEST_VECTORS.md`](./TEST_VECTORS.md), and an independent implementation in Python, with its own BLAKE3, rebuilds them in CI.

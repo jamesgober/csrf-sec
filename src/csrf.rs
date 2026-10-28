@@ -22,8 +22,8 @@ pub const DEFAULT_LIFETIME: Duration = Duration::from_secs(12 * 3600);
 /// Default tolerated clock difference between nodes: 60 seconds.
 pub const DEFAULT_SKEW: Duration = Duration::from_secs(60);
 
-/// Default lifetime of one-time tokens: 1 hour (never longer than the general
-/// lifetime). One-time tokens protect single actions such as a payment, so a
+/// Default lifetime of one-time tokens: 1 hour, or the general lifetime if
+/// that is shorter. One-time tokens protect single actions such as a payment, so a
 /// short life keeps their store records, and any abuse of the store, short.
 pub const DEFAULT_ONCE_LIFETIME: Duration = Duration::from_secs(3600);
 
@@ -229,9 +229,10 @@ impl Csrf {
     /// Check a request at `now` (unix seconds): the policy and the token,
     /// combined by the mode. Works without `std`.
     ///
-    /// Safe methods (`GET`, `HEAD`, `OPTIONS`) pass without a token. A
-    /// one-time binding always checks the token: in `PolicyOnly` mode it is
-    /// checked after the policy, as in `Strict`.
+    /// Safe methods (`GET`, `HEAD`, `OPTIONS`) pass without a token, except
+    /// with a one-time binding: that always checks and consumes the token,
+    /// whatever the method and the mode (a one-time `GET` link, say), after
+    /// the policy in `Strict` and `PolicyOnly` mode.
     pub fn check_at(
         &self,
         facts: &RequestFacts<'_>,
@@ -242,21 +243,27 @@ impl Csrf {
         match self.mode {
             Mode::Strict => {
                 let origin = self.policy.decide(facts)?;
-                if origin == OriginCheck::SafeMethod {
+                if origin == OriginCheck::SafeMethod && binding.store.is_none() {
                     return Ok(Verified::policy(origin));
                 }
                 self.verify_at(binding, token, now)
                     .map(|v| v.with_origin_check(origin))
             }
             Mode::TokenOnly => {
-                if facts.method() == crate::MethodClass::Safe {
+                let safe = facts.method() == crate::MethodClass::Safe;
+                if safe && binding.store.is_none() {
                     return Ok(Verified::policy(OriginCheck::SafeMethod));
                 }
-                self.verify_at(binding, token, now)
+                let verified = self.verify_at(binding, token, now)?;
+                Ok(if safe {
+                    verified.with_origin_check(OriginCheck::SafeMethod)
+                } else {
+                    verified
+                })
             }
             Mode::PolicyOnly => {
                 let origin = self.policy.decide_strict_metadata(facts)?;
-                if binding.store.is_none() || origin == OriginCheck::SafeMethod {
+                if binding.store.is_none() {
                     return Ok(Verified::policy(origin));
                 }
                 self.verify_at(binding, token, now)
@@ -266,9 +273,11 @@ impl Csrf {
     }
 
     /// A new `Csrf` that signs with `key` under `id`, keeping the current
-    /// signing key as retired for one lifetime plus skew after `now` (to the
-    /// last second of the last token it could have signed), so no open form
-    /// fails. Retired keys already expired at `now` are dropped. If `id` is an
+    /// signing key as retired for one lifetime (or the one-time lifetime, if
+    /// longer) plus skew after `now`, to the last second of the last token it
+    /// could have signed. With expiry on, no open form fails; with
+    /// [`Builder::no_expiry`], forms older than that fail as `unknown_key` and
+    /// must be reloaded, since rotation is what ends their tokens. Retired keys already expired at `now` are dropped. If `id` is an
     /// accepted (staged) key with the same key bytes, it is promoted.
     ///
     /// # Errors
@@ -283,9 +292,11 @@ impl Csrf {
         let key = Zeroizing::new(key);
         let slot = Slot::derive(id, KeyRole::Signing, &key)?;
         // A peer whose clock runs `skew` ahead may sign with the old key until
-        // `now + skew`; that token is valid through `+ lifetime`, inclusive,
-        // and a retired key verifies while `now < retire_at`, hence the `+ 1`.
-        let retire_at = now + u64::from(self.window.lifetime) + u64::from(self.window.skew) + 1;
+        // `now + skew`; that token is valid through `+ lifetime` (or the
+        // one-time lifetime, if longer), inclusive, and a retired key
+        // verifies while `now < retire_at`, hence the `+ 1`.
+        let longest = self.window.lifetime.max(self.once_window.lifetime);
+        let retire_at = now + u64::from(longest) + u64::from(self.window.skew) + 1;
         Ok(Self {
             ring: self.ring.rotated(slot, now, retire_at)?,
             window: self.window,
@@ -483,8 +494,8 @@ impl Builder {
 
     /// A key that verifies until `retire_at` (unix seconds, exclusive), then
     /// is refused as [`Reason::UnknownKey`](crate::Reason::UnknownKey). Set
-    /// `retire_at` at least one lifetime plus skew plus one second after the
-    /// key stopped signing. A time past 2156 (a time in milliseconds, say) is
+    /// `retire_at` at least one lifetime (or the one-time lifetime, if longer)
+    /// plus skew plus one second after the key stopped signing. A time past 2156 (a time in milliseconds, say) is
     /// refused by [`build`](Self::build) as [`Error::InvalidRetireTime`].
     #[must_use]
     pub fn retired(self, id: KeyId, key: [u8; KEY_LEN], retire_at: u64) -> Self {
@@ -504,14 +515,18 @@ impl Builder {
     /// Tokens never expire on their own: a token stays valid for as long as
     /// the session id it is bound to, the per-session token OWASP describes.
     /// Your session layer ends it, by rotating the session id at login and
-    /// ending the session at logout.
+    /// ending the session at logout. The session value must therefore be
+    /// regenerated at login and never reissued after logout, and must never
+    /// be a user or account id, which outlives every session.
     ///
     /// The issue time is still checked against the skew, so a token from the
-    /// future is refused. Key rotation still ends old tokens: a rotated-out
-    /// key keeps verifying for one [`lifetime`](Self::lifetime) plus skew,
-    /// then its tokens fail as `unknown_key`. One-time tokens always expire,
-    /// after [`once_lifetime`](Self::once_lifetime), which may then be longer
-    /// than the lifetime.
+    /// future is refused, and so is a clock past 2156 (a time in
+    /// milliseconds, say). Key rotation still ends old tokens: a rotated-out
+    /// key keeps verifying for one [`lifetime`](Self::lifetime) (or the
+    /// one-time lifetime, if longer) plus skew, then its tokens fail as
+    /// `unknown_key`. One-time tokens always expire, after
+    /// [`once_lifetime`](Self::once_lifetime), which may then be set longer
+    /// than the lifetime; its default does not change.
     ///
     /// The trade-off: a token that leaks (from a log, a cache, a shared
     /// screen) stays usable for that session until the session ends, where
@@ -523,13 +538,16 @@ impl Builder {
     }
 
     /// How long a one-time token ([`Binding::once`]) stays valid (default 1
-    /// hour, or the general lifetime if that is shorter; at most the general
-    /// lifetime). The store keeps each used one-time token for this long plus
-    /// the skew.
+    /// hour, or the general lifetime if that is shorter, whether or not
+    /// tokens expire; at most the general lifetime, unless
+    /// [`no_expiry`](Self::no_expiry) is set). The store keeps each used
+    /// one-time token for this long plus the skew.
     ///
     /// Every node sharing a store must use the same value: the consuming
     /// node sets the record's expiry, and a node with a longer setting would
-    /// accept the token again after that record expired.
+    /// accept the token again after that record expired. In a cluster, set it
+    /// explicitly and compare [`Csrf::once_lifetime`] across nodes, as you
+    /// compare key fingerprints.
     #[must_use]
     pub fn once_lifetime(mut self, lifetime: Duration) -> Self {
         self.once_lifetime = Some(lifetime);
@@ -599,17 +617,19 @@ impl Builder {
         if skew > lifetime {
             return Err(Error::InvalidSkew);
         }
-        // Without expiry the lifetime is only the rotation grace, so it does
-        // not cap the one-time lifetime.
+        // The default never depends on the expiry setting, so nodes sharing
+        // a store agree on it. Without expiry the lifetime is only the
+        // rotation grace, so an explicit one-time lifetime may exceed it.
         let once_cap = if self.expires { lifetime } else { u32::MAX };
         let once = match self.once_lifetime {
-            None => once_cap.min(DEFAULT_ONCE_LIFETIME.as_secs() as u32),
+            None => lifetime.min(DEFAULT_ONCE_LIFETIME.as_secs() as u32),
             Some(d) => match u32::try_from(d.as_secs()) {
                 Ok(secs) if secs != 0 && secs <= once_cap => secs,
                 _ => return Err(Error::InvalidLifetime),
             },
         };
-        let latest = token::EPOCH + u64::from(u32::MAX) + u64::from(lifetime) + u64::from(skew) + 1;
+        let longest = lifetime.max(once);
+        let latest = token::EPOCH + u64::from(u32::MAX) + u64::from(longest) + u64::from(skew) + 1;
         if self
             .keys
             .iter()

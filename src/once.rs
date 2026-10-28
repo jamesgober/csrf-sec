@@ -128,6 +128,11 @@ impl fmt::Debug for NonceUse<'_> {
 /// tokens whose MAC, validity window, and scope already passed, so it never
 /// sees forged input, and nonces are never chosen by a client.
 ///
+/// The smallest correct store, for tests: it never forgets a nonce, so it grows
+/// with every use and is empty again after a restart. A real store expires
+/// records at `use_.expires_at` and refuses tokens issued before it started, as
+/// `MemoryStore` (feature `std`) does.
+///
 /// ```
 /// use std::{collections::HashSet, sync::Mutex};
 /// use csrf_sec::{NonceStore, NonceUse, StoreError};

@@ -444,3 +444,131 @@ fn r2_upgrade_path_keeps_one_time_tokens_single_use() {
         Reason::AlreadyUsed
     );
 }
+
+// -------------------------------------------------- third review (D-092 to D-097)
+
+/// Third review, finding 1: `no_expiry` must not change the default one-time
+/// lifetime, or two nodes sharing a store disagree and a used token passes
+/// again after the shorter-lived record is purged.
+#[test]
+fn r3_no_expiry_keeps_the_default_one_time_lifetime() {
+    let ten_minutes = Duration::from_secs(600);
+    let a = Csrf::builder()
+        .key(KeyId(1), KEY)
+        .lifetime(ten_minutes)
+        .build()
+        .unwrap();
+    let b = Csrf::builder()
+        .key(KeyId(1), KEY)
+        .lifetime(ten_minutes)
+        .no_expiry()
+        .build()
+        .unwrap();
+    assert_eq!(a.once_lifetime(), b.once_lifetime());
+    let store = MemoryStore::starting_at(1 << 16, NOW - 60);
+    let binding = Binding::new("s").once(&store);
+    let t = a.issue_at(&binding, NOW, &mut Pads(30)).unwrap();
+    assert!(a.verify_at(&binding, t.as_bytes(), NOW + 10).is_ok());
+    store.purge_expired(NOW + 700);
+    assert_eq!(
+        b.verify_at(&binding, t.as_bytes(), NOW + 800)
+            .unwrap_err()
+            .reason(),
+        Reason::Expired,
+        "the token died with the record on every node"
+    );
+}
+
+/// Third review, finding 2: a one-time binding is checked on safe methods
+/// too, in every mode, so a one-time GET link cannot be reused or forged.
+#[test]
+fn r3_one_time_binding_is_checked_on_safe_methods() {
+    for mode in [Mode::Strict, Mode::TokenOnly, Mode::PolicyOnly] {
+        let c = Csrf::builder()
+            .key(KeyId(1), KEY)
+            .mode(mode)
+            .build()
+            .unwrap();
+        let store = MemoryStore::starting_at(1 << 16, NOW - 60);
+        let link = Binding::new("s").scope("GET /confirm").once(&store);
+        let get = RequestFacts::new("GET").fetch_site("cross-site");
+        assert_eq!(
+            c.check_at(&get, &link, b"forged", NOW)
+                .unwrap_err()
+                .reason(),
+            Reason::Malformed,
+            "{mode:?}"
+        );
+        let t = c.issue_at(&link, NOW, &mut Pads(31)).unwrap();
+        let first = c.check_at(&get, &link, t.as_bytes(), NOW).unwrap();
+        assert!(first.token_checked(), "{mode:?}");
+        assert_eq!(
+            c.check_at(&get, &link, t.as_bytes(), NOW)
+                .unwrap_err()
+                .reason(),
+            Reason::AlreadyUsed,
+            "{mode:?}"
+        );
+    }
+}
+
+/// Third review, finding 3: rotation keeps the old key long enough for every
+/// token it signed, one-time tokens included, when the one-time lifetime is
+/// longer than the lifetime (possible only with `no_expiry`).
+#[test]
+fn r3_rotation_outlasts_the_longest_token_lifetime() {
+    let c = Csrf::builder()
+        .key(KeyId(1), KEY)
+        .no_expiry()
+        .lifetime(Duration::from_secs(600))
+        .skew(Duration::from_secs(30))
+        .once_lifetime(Duration::from_secs(3_600))
+        .build()
+        .unwrap();
+    let store = MemoryStore::starting_at(1 << 16, NOW - 60);
+    let pay = Binding::new("s").once(&store);
+    let t = c.issue_at(&pay, NOW - 1, &mut Pads(32)).unwrap();
+    let c = c
+        .rotated_at(KeyId(2), *b"the next key, thirty-two bytes!!", NOW)
+        .unwrap();
+    let passed = c.verify_at(&pay, t.as_bytes(), NOW + 3_599).unwrap();
+    assert!(passed.retired_key());
+    // The builder's limit on retire times follows the same rule.
+    let latest = 1_577_836_800 + u64::from(u32::MAX) + 3_600 + 30 + 1;
+    let build = |retire_at| {
+        Csrf::builder()
+            .key(KeyId(1), KEY)
+            .retired(KeyId(2), *b"the next key, thirty-two bytes!!", retire_at)
+            .no_expiry()
+            .lifetime(Duration::from_secs(600))
+            .skew(Duration::from_secs(30))
+            .once_lifetime(Duration::from_secs(3_600))
+            .build()
+    };
+    assert!(build(latest).is_ok());
+    assert_eq!(build(latest + 1).unwrap_err(), Error::InvalidRetireTime);
+}
+
+/// Third review, finding 6: without expiry, a clock past the range any token
+/// can reach (a time in milliseconds, say) still fails closed.
+#[test]
+fn r3_no_expiry_refuses_out_of_range_clocks() {
+    let c = Csrf::builder()
+        .key(KeyId(1), KEY)
+        .no_expiry()
+        .build()
+        .unwrap();
+    let b = Binding::new("s");
+    let t = c.issue_at(&b, NOW, &mut Pads(33)).unwrap();
+    assert!(
+        c.verify_at(&b, t.as_bytes(), NOW + 100 * 365 * 86_400)
+            .is_ok()
+    );
+    for now in [NOW * 1_000, u64::MAX] {
+        assert_eq!(
+            c.verify_at(&b, t.as_bytes(), now).unwrap_err().reason(),
+            Reason::Expired,
+            "{now}"
+        );
+    }
+}

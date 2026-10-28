@@ -29,7 +29,7 @@
         <strong>MSRV is 1.85+</strong> (Rust 2024 edition). <code>#![forbid(unsafe_code)]</code>. <code>no_std</code> core (with <code>alloc</code>).
     </p>
     <blockquote>
-        <strong>Status: <code>0.9.1</code>, release candidate.</strong> Every feature is built, measured, attacked, checked against real browsers, and caught by mutation testing; two independent adversarial reviews found no way to forge a pass, every other finding is fixed, and the design is checked point by point against OWASP's CSRF guidance. <code>1.0</code> waits on the checklist in <a href="./dev/ROADMAP.md"><code>dev/ROADMAP.md</code></a>, the first real integration among it.
+        <strong>Status: <code>0.9.2</code>, release candidate.</strong> Every feature is built, measured, attacked, checked against real browsers, and caught by mutation testing; three independent adversarial reviews found no way to forge a pass, every other finding is fixed, and the design is checked point by point against OWASP's CSRF guidance. <code>1.0</code> waits on the checklist in <a href="./dev/ROADMAP.md"><code>dev/ROADMAP.md</code></a>, the first real integration among it.
     </blockquote>
 </div>
 
@@ -129,6 +129,8 @@ Before `1.0`, a minor release (`0.10`) may still change the API; patch releases 
 
 - [`docs/API.md`](./docs/API.md): the API by task, an adapter guide, and recipes (no server session, single-page apps, tenants, logging), every example compiled as a test.
 - [`docs/PERFORMANCE.md`](./docs/PERFORMANCE.md): measured costs of every call and rejection, and the comparison with the `csrf` crate.
+- [`docs/TEST_VECTORS.md`](./docs/TEST_VECTORS.md): fixed token vectors for both layouts, for checking another implementation of the format.
+- [`SECURITY.md`](./SECURITY.md): how to report a vulnerability privately.
 - [docs.rs/csrf-sec](https://docs.rs/csrf-sec): item reference.
 - [`dev/PLAN.md`](./dev/PLAN.md): the design, threats T1-T15 with defence and cost, and the decision log.
 - [`CHANGELOG.md`](./CHANGELOG.md).
