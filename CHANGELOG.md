@@ -13,7 +13,7 @@
 
 ---
 
-## [0.9.2] - 2026-10-28
+## [0.9.2] - 2026-11-02
 
 A third adversarial review, of 0.9.1's optional expiry and everything since
 the second review, found no way to forge a pass. It found one way to pass a
@@ -38,6 +38,10 @@ of its findings, each with a test that failed first (`tests/review.rs`,
   limit follows the same rule.
 - With `no_expiry`, a clock past 2156 (a time in milliseconds, say) is
   refused as `expired`, as it is with expiry on.
+- The minimum `crypt-io` is now 1.2.2. Older versions put `ctutils` 0.4.2
+  (RUSTSEC-2026-0385) into a lockfile through an optional dependency. It was
+  never compiled into csrf-sec, but `cargo audit` reported it to anyone
+  locked to one of those versions.
 
 ### Added
 

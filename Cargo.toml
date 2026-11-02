@@ -62,7 +62,7 @@ alloc = []
 [dependencies]
 # Keyed BLAKE3, constant-time tag comparison, and Zeroizing. The accepted
 # audited-crypto exception (dev/PLAN.md, section 12).
-crypt-io = { version = "1.1", default-features = false, features = ["mac-blake3", "zeroize"] }
+crypt-io = { version = "1.2.2", default-features = false, features = ["mac-blake3", "zeroize"] }
 
 # OS CSPRNG for token pads and nonces (first-party, zero dependencies).
 mod-rand = { version = "1", optional = true, default-features = false, features = ["tier3"] }
