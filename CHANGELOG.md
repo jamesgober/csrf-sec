@@ -13,7 +13,7 @@
 
 ---
 
-## [0.9.2] - 2026-11-02
+## [0.9.2] - 2026-11-04
 
 A third adversarial review, of 0.9.1's optional expiry and everything since
 the second review, found no way to forge a pass. It found one way to pass a
