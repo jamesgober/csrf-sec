@@ -495,8 +495,10 @@ impl Builder {
     /// A key that verifies until `retire_at` (unix seconds, exclusive), then
     /// is refused as [`Reason::UnknownKey`](crate::Reason::UnknownKey). Set
     /// `retire_at` at least one lifetime (or the one-time lifetime, if longer)
-    /// plus skew plus one second after the key stopped signing. A time past 2156 (a time in milliseconds, say) is
-    /// refused by [`build`](Self::build) as [`Error::InvalidRetireTime`].
+    /// plus skew plus one second after the key stopped signing. A time past
+    /// the last second any token could reach (2156 plus the longest token
+    /// lifetime and the skew; a time in milliseconds, say) is refused by
+    /// [`build`](Self::build) as [`Error::InvalidRetireTime`].
     #[must_use]
     pub fn retired(self, id: KeyId, key: [u8; KEY_LEN], retire_at: u64) -> Self {
         self.push(id, KeyRole::Retired { until: retire_at }, key)
@@ -520,8 +522,8 @@ impl Builder {
     /// be a user or account id, which outlives every session.
     ///
     /// The issue time is still checked against the skew, so a token from the
-    /// future is refused, and so is a clock past 2156 (a time in
-    /// milliseconds, say). Key rotation still ends old tokens: a rotated-out
+    /// future is refused, and so is a clock past 2156 plus the lifetime and
+    /// skew (a time in milliseconds, say). Key rotation still ends old tokens: a rotated-out
     /// key keeps verifying for one [`lifetime`](Self::lifetime) (or the
     /// one-time lifetime, if longer) plus skew, then its tokens fail as
     /// `unknown_key`. One-time tokens always expire, after

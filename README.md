@@ -21,7 +21,7 @@
         <strong>csrf-sec</strong> answers one question for every state-changing request: did this request come from our own page, for this session? It answers with independent checks, so one failing defence does not open the door: a request origin policy over the browser's Fetch Metadata and <code>Origin</code> headers, a signed token bound to the session and masked differently on every response, and cookie guidance for the session cookie.
     </p>
     <p>
-        It is protocol-free and stateless: adapters hand it plain values, and any node holding the key ring verifies any token, with nothing to store or replicate. Issuing and verifying allocate nothing and take no lock.
+        It is protocol-free and stateless: adapters hand it plain values, and any node holding the key ring verifies any token, with nothing to store or replicate. Issuing and verifying allocate nothing and take no lock; a one-time token adds one call to the store you give it.
     </p>
     <br>
     <hr>

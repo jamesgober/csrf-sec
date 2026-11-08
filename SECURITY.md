@@ -60,12 +60,14 @@ If you are not sure whether something qualifies, report it privately.
 
 ## Verification
 
-Every pull request and push to `main` runs, on Linux, macOS, and
-Windows with stable and the MSRV: the test suite (including an attack
-test per threat, property tests per invariant, and fixed token
-vectors), bare-metal `no_std` builds, a constant-time smoke test, fuzz
-smoke runs, mutation testing of the changed code, `cargo audit`, and
-`cargo deny`. The threat model and every security decision are in
+Every pull request and push to `main` runs the test suite (including
+an attack test per threat, property tests per invariant, and fixed token
+vectors) on Linux, macOS, and Windows with stable and the MSRV. On
+Linux it also runs bare-metal `no_std` builds with stable and the MSRV,
+a constant-time smoke test, fuzz smoke runs, the token vectors against
+an independent implementation, `cargo semver-checks`, `cargo audit`, and
+`cargo deny`. Pull requests are also mutation-tested over the changed
+code, and the whole crate is mutation-tested every week. The threat model and every security decision are in
 [`dev/PLAN.md`](dev/PLAN.md).
 
 ## Acknowledgements
