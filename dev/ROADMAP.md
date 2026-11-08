@@ -91,6 +91,7 @@ Exit: an independent adversarial review with every finding fixed test-first; the
 - [x] Every doc claim checked against the code again; nine places that had fallen behind 0.9.2 corrected.
 - [x] Hot paths since v0.9.0 checked for added work: a few instructions per call (D-100). Fresh absolute numbers wait for the full gate.
 - [x] The weekly full mutation run covers this source: 788 mutants, none missed.
+- [x] Long fuzzing on this source: three hours per target, no finding (`verify` 157M executions, `mutate` 107M, `policy` 155M, `once` 17M).
 
 ## v1.0.0 - Stable
 1.0 freezes the API until 2.0 and the token format for 1.x, and a crates.io version cannot be taken back, so it waits until the API has been used for real. Each item below is required; nothing is ticked on intent.
@@ -107,7 +108,7 @@ Exit: an independent adversarial review with every finding fixed test-first; the
 
 **Checked again on the final commit**
 - [x] **A third adversarial review**, of everything since the second: no forgery; one replay after a configuration change (`no_expiry` moved the default one-time lifetime), one-time `GET` not checked, rotation grace for long one-time tokens, a clock bound, and doc gaps, all fixed test-first in 0.9.2 (`tests/review.rs`, `r3_*`; PLAN D-092 to D-097). Any code change after this needs its own review before 1.0.
-- [ ] **Long fuzzing**: hours per target, not the CI smoke run, with no finding.
+- [ ] **Long fuzzing**: hours per target, not the CI smoke run, with no finding. *Last run:* 0.9.3 source, three hours per target, no finding; repeat on the final commit if the source changes.
 - [ ] **The full gate on the release commit**: all platforms and toolchains, mutation testing over the whole crate, the long constant-time run, benchmarks re-measured and `PERFORMANCE.md` updated, every doc claim still true.
 
 **Later, additive in 1.x** (not required for 1.0)
