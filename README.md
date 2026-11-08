@@ -29,7 +29,7 @@
         <strong>MSRV is 1.85+</strong> (Rust 2024 edition). <code>#![forbid(unsafe_code)]</code>. <code>no_std</code> core (with <code>alloc</code>).
     </p>
     <blockquote>
-        <strong>Status: <code>0.9.2</code>, release candidate.</strong> Every feature is built, measured, attacked, checked against real browsers, and caught by mutation testing; three independent adversarial reviews found no way to forge a pass, every other finding is fixed, and the design is checked point by point against OWASP's CSRF guidance. <code>1.0</code> waits on the checklist in <a href="./dev/ROADMAP.md"><code>dev/ROADMAP.md</code></a>, the first real integration among it.
+        <strong>Status: <code>0.9.3</code>, release candidate.</strong> Every feature is built, measured, attacked, checked against real browsers, and caught by mutation testing; three independent adversarial reviews found no way to forge a pass, every other finding is fixed, and the design is checked point by point against OWASP's CSRF guidance. <code>1.0</code> waits on the checklist in <a href="./dev/ROADMAP.md"><code>dev/ROADMAP.md</code></a>, the first real integration among it.
     </blockquote>
 </div>
 

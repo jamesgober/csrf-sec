@@ -11,6 +11,14 @@
 
 ## [Unreleased]
 
+---
+
+## [0.9.3] - 2026-11-08
+
+A polish release: no change to what the crate does. Cluster tests for
+one-time tokens across nodes sharing a store, and documentation brought in
+line with the code where it had fallen behind 0.9.2.
+
 ### Added
 
 - `tests/cluster.rs`: several independently built nodes sharing one
@@ -424,7 +432,8 @@ The scaffold and the plan. No functional code yet.
   keys and rotation, verdicts, threats T1-T15, architecture, ecosystem, open
   decisions, decision log), `dev/DIRECTIVES.md`, and `dev/ROADMAP.md`.
 
-[Unreleased]: https://github.com/jamesgober/csrf-sec/compare/v0.9.2...HEAD
+[Unreleased]: https://github.com/jamesgober/csrf-sec/compare/v0.9.3...HEAD
+[0.9.3]: https://github.com/jamesgober/csrf-sec/compare/v0.9.2...v0.9.3
 [0.9.2]: https://github.com/jamesgober/csrf-sec/compare/v0.9.1...v0.9.2
 [0.9.1]: https://github.com/jamesgober/csrf-sec/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/jamesgober/csrf-sec/compare/v0.8.0...v0.9.0

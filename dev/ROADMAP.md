@@ -81,12 +81,23 @@ Exit: an independent adversarial review with every finding fixed test-first; the
 - [x] Optional expiry: `Builder::no_expiry` (D-088).
 - [x] Long constant-time run on this code (2,000,000 samples per class, |t| < 4.5).
 
+## v0.9.2 - Third review (DONE, 2026-11-07)
+- [x] Third adversarial review, every finding fixed test-first (`tests/review.rs`, `r3_*`; PLAN D-092 to D-097).
+- [x] Token test vectors with an independent implementation in CI, `cargo semver-checks` in CI, `SECURITY.md`.
+- [x] Minimum `crypt-io` 1.2.2 (D-098).
+
+## v0.9.3 - Polish (DONE, 2026-11-08)
+- [x] Cluster tests: nodes sharing one one-time store with only set-if-absent and expiry; exactly once under concurrency, two-step rotation under traffic, clocks apart by the skew, a store outage, a mis-deployed key (`tests/cluster.rs`, D-099). Each test shown to fail against a broken store.
+- [x] Every doc claim checked against the code again; nine places that had fallen behind 0.9.2 corrected.
+- [x] Hot paths since v0.9.0 checked for added work: a few instructions per call (D-100). Fresh absolute numbers wait for the full gate.
+- [x] The weekly full mutation run covers this source: 788 mutants, none missed.
+
 ## v1.0.0 - Stable
 1.0 freezes the API until 2.0 and the token format for 1.x, and a crates.io version cannot be taken back, so it waits until the API has been used for real. Each item below is required; nothing is ticked on intent.
 
 **Proven in use**
 - [ ] **A real integration.** gate-net (sessions) and the web-net adapter use csrf-sec from crates.io, in front of real routes: login, logout, a form, a `fetch` API. Every piece of friction they hit is fixed in a 0.9.x or 0.10 release first.
-- [ ] **A shared one-time store.** A `NonceStore` over the store WASP's gates share, set-if-absent with expiry, tested with several nodes consuming the same tokens at once, and the cluster rules (same keys, same `once_lifetime`) checked at deployment.
+- [ ] **A shared one-time store.** A `NonceStore` over the store WASP's gates share, set-if-absent with expiry, tested with several nodes consuming the same tokens at once, and the cluster rules (same keys, same `once_lifetime`) checked at deployment. *Progress (0.9.3):* `tests/cluster.rs` proves the set-if-absent contract is enough, with several nodes racing; what remains is the adapter over the real store and the deployment check, both waiting on WASP's gates.
 - [ ] **The API names, signed off by James.** Every public name is one to live with until 2.0: `Csrf`, `Binding`, `once`, `previous_session`, `check_with`, `no_expiry`, `RequestFacts`, `Reason` names.
 
 **Locked down**
