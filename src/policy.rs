@@ -6,7 +6,7 @@
 //! nothing here parses HTTP.
 //!
 //! ```text
-//! safe method                                   -> pass (no token needed)
+//! safe method                                   -> pass (a one-time binding still checks its token)
 //! Sec-Fetch-Site: same-origin | none            -> pass
 //! Sec-Fetch-Site: same-site                     -> pass if allow_same_site or Origin allowlisted; else CrossSite
 //! Sec-Fetch-Site: cross-site                    -> pass if Origin allowlisted; else CrossSite
@@ -42,7 +42,8 @@ const MAX_HEADER: usize = 4096;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum MethodClass {
-    /// `GET`, `HEAD`, `OPTIONS`: must not change state; no check needed.
+    /// `GET`, `HEAD`, `OPTIONS`: must not change state. The policy passes
+    /// them, and only a one-time binding checks a token.
     Safe,
     /// Every other method: checked.
     Unsafe,
@@ -218,9 +219,9 @@ pub enum Mode {
     Strict,
     /// Only the token is checked. For clients that send no browser headers.
     TokenOnly,
-    /// Only the policy is checked, and `Sec-Fetch-Site` must be present. For
-    /// endpoints called only from modern browsers, with no forms. Never the
-    /// default.
+    /// Only the policy is checked, and `Sec-Fetch-Site` must be present (a
+    /// one-time binding's token is still checked and consumed). For endpoints
+    /// called only from modern browsers, with no forms. Never the default.
     PolicyOnly,
 }
 

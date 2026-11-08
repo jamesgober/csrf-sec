@@ -13,6 +13,36 @@
 
 ---
 
+## [0.9.3] - 2026-11-08
+
+A polish release: no change to what the crate does. Cluster tests for
+one-time tokens across nodes sharing a store, and documentation brought in
+line with the code where it had fallen behind 0.9.2.
+
+### Added
+
+- `tests/cluster.rs`: several independently built nodes sharing one
+  one-time store with only set-if-absent and expiry (the contract of a
+  networked key-value store). Every one-time token passes exactly once
+  under concurrency, across a two-step key rotation under traffic, with
+  clocks apart by up to the skew (through the token's whole life and after
+  the store drops the record), and through a store outage, which fails
+  closed and consumes nothing. A key deployed with the wrong bytes shows in
+  its fingerprint and never reaches the store.
+
+### Fixed
+
+- Documentation said safe methods, and `Mode::PolicyOnly`, never check a
+  token; a one-time binding always does (0.9.2, D-093). `SECURITY.md`
+  listed every CI job as running on three platforms and two toolchains;
+  it now says which run where. `Verified::retired_key`, `Error`, and the
+  `no_expiry` and `retired` docs now give the 0.9.2 rotation grace and the
+  exact time bounds. Also: two subkeys per key id, which test vectors take
+  the streamed MAC path, and that a one-time token adds a store call to
+  "no allocation, no lock".
+
+---
+
 ## [0.9.2] - 2026-11-07
 
 A third adversarial review, of 0.9.1's optional expiry and everything since
@@ -402,7 +432,8 @@ The scaffold and the plan. No functional code yet.
   keys and rotation, verdicts, threats T1-T15, architecture, ecosystem, open
   decisions, decision log), `dev/DIRECTIVES.md`, and `dev/ROADMAP.md`.
 
-[Unreleased]: https://github.com/jamesgober/csrf-sec/compare/v0.9.2...HEAD
+[Unreleased]: https://github.com/jamesgober/csrf-sec/compare/v0.9.3...HEAD
+[0.9.3]: https://github.com/jamesgober/csrf-sec/compare/v0.9.2...v0.9.3
 [0.9.2]: https://github.com/jamesgober/csrf-sec/compare/v0.9.1...v0.9.2
 [0.9.1]: https://github.com/jamesgober/csrf-sec/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/jamesgober/csrf-sec/compare/v0.8.0...v0.9.0

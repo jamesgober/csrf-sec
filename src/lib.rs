@@ -2,7 +2,8 @@
 //!
 //! Request-forgery protection for Rust services: signed, session-bound tokens
 //! masked per response, plus Fetch Metadata and Origin policy. Stateless,
-//! protocol-free, no allocation on verify.
+//! protocol-free, no allocation on verify (outside the store a one-time
+//! token uses).
 //!
 //! csrf-sec answers one question for every state-changing request: **did this
 //! request come from our own page, for this session?** It answers with

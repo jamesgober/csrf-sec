@@ -37,7 +37,8 @@ pub enum Error {
     /// Drop retired keys whose tokens have expired.
     TooManyKeys,
     /// The lifetime is under one second or over `u32::MAX` seconds, or the
-    /// one-time lifetime is zero or longer than the lifetime.
+    /// one-time lifetime is zero, or longer than the lifetime without
+    /// [`no_expiry`](crate::Builder::no_expiry).
     InvalidLifetime,
     /// The skew is longer than the lifetime.
     InvalidSkew,
@@ -47,8 +48,9 @@ pub enum Error {
     /// A token cannot be bound to an empty session id: it would be valid for
     /// every visitor. Bind to the guest session before login.
     EmptySession,
-    /// A retired key's retire time is past 2156, beyond any token's reach:
-    /// most likely a time in milliseconds where seconds were meant.
+    /// A retired key's retire time is past the last second any token could
+    /// reach (2156 plus the longest token lifetime and the skew): most likely
+    /// a time in milliseconds where seconds were meant.
     InvalidRetireTime,
     /// The clock reads outside 2020-01-01 to 2156-02-07, which a token cannot
     /// represent. Fix the system clock; no token was issued.
@@ -80,7 +82,7 @@ impl fmt::Display for Error {
                 crate::MAX_KEYS
             ),
             Self::InvalidLifetime => f.write_str(
-                "token lifetime must be 1 second to u32::MAX seconds, and the one-time lifetime 1 second to the lifetime",
+                "token lifetime must be 1 second to u32::MAX seconds, and the one-time lifetime 1 second to the lifetime (or to u32::MAX seconds with no_expiry)",
             ),
             Self::InvalidSkew => f.write_str("clock skew must not be longer than the token lifetime"),
             Self::InvalidOrigin => f.write_str(

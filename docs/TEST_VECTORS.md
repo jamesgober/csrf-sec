@@ -28,7 +28,7 @@ A one-time token draws its 16-byte nonce from the pad source first, so its nonce
 | 7 | one-time (v2) | 0 | `session-1` | `POST /pay` | `T` | `EBESExQVFhcYGRobHB0eHyAhIiMkJSYnKCkqKywtLi8wMTIzNDUSEZIM2BkWFhoaHh4aGhYWKiouLioqtAwWUz2ob7Iv7nQucaPUTA` |
 | 8 | one-time (v2) | 9 | long session | long scope | `T` | `EBESExQVFhcYGRobHB0eHyAhIiMkJSYnKCkqKywtLi8wMTIzNDUSGJIM2BkWFhoaHh4aGhYWKiouLioq6KxTaiXqC1CIbNPjQ5CkKg` |
 
-Vectors 4 and 8 take the MAC input past one 64-byte BLAKE3 block (the streamed path in the crate); 5 and 6 are the first and last representable issue times.
+Vectors 3, 4, and 8 take the MAC input past one 64-byte BLAKE3 block; 4 and 8 also pass 128 bytes, where the crate streams the input instead of copying it to a stack buffer; 5 and 6 are the first and last representable issue times.
 
 ## Key fingerprint
 

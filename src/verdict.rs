@@ -251,8 +251,9 @@ impl Verified {
         self.key_id
     }
 
-    /// `true` when the token was signed by a retired key: it passed, and the
-    /// rotation that retired the key is still within one token lifetime.
+    /// `true` when the token was signed by a retired key: it passed because
+    /// the key's retire time has not come yet. After a rotation that is one
+    /// lifetime (or the one-time lifetime, if longer) plus skew.
     #[must_use]
     pub const fn retired_key(&self) -> bool {
         self.retired_key

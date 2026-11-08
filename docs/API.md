@@ -16,7 +16,7 @@
 
 A task-oriented tour of the API, Tier 1 first. The rustdoc on [docs.rs](https://docs.rs/csrf-sec) is the item-by-item reference. Every `rust` example in this file is compiled and run as a doctest, so it matches the build; lines starting with `#` are setup hidden in rustdoc.
 
-> **Status: `0.9.2`, release candidate.** The API on this page is the 1.0 candidate; `1.0` will freeze it (additions only until `2.0`) and the token format, on the terms in the README. Every cost below is a measurement from [`PERFORMANCE.md`](./PERFORMANCE.md) (Linux, Ryzen 9 9950X3D) unless marked as an estimate.
+> **Status: `0.9.3`, release candidate.** The API on this page is the 1.0 candidate; `1.0` will freeze it (additions only until `2.0`) and the token format, on the terms in the README. Every cost below is a measurement from [`PERFORMANCE.md`](./PERFORMANCE.md) (Linux, Ryzen 9 9950X3D) unless marked as an estimate.
 
 - [Setup](#setup)
 - [Tier 1: three calls](#tier-1-three-calls)
@@ -211,7 +211,7 @@ The adapter fills only what the request carried. Values are raw header bytes; no
 ### The decision
 
 ```text
- safe method                                   -> pass (no token needed)
+ safe method                                   -> pass (a one-time binding still checks its token)
  Sec-Fetch-Site: same-origin | none            -> pass
  Sec-Fetch-Site: same-site                     -> pass if allow_same_site, or Origin is allowlisted; else CrossSite
  Sec-Fetch-Site: cross-site                    -> pass if Origin is allowlisted; else CrossSite
@@ -257,9 +257,9 @@ assert_eq!(csrf.policy(&old_browser)?, OriginCheck::Origin);
 |---|---|---|
 | `Mode::Strict` (default) | layer 1 does not refuse **and** the token verifies | browsers, the normal case |
 | `Mode::TokenOnly` | the token verifies | clients that send no browser headers |
-| `Mode::PolicyOnly` | `Sec-Fetch-Site` was sent and layer 1 passes | endpoints called only from modern browsers, with no forms; never the default |
+| `Mode::PolicyOnly` | `Sec-Fetch-Site` was sent and layer 1 passes (and a one-time binding's token verifies) | endpoints called only from modern browsers, with no forms; never the default |
 
-In `Strict`, layer 1 runs first and a refusal returns at once, before any token work. In every mode, safe methods pass without a token.
+In `Strict`, layer 1 runs first and a refusal returns at once, before any token work. In every mode, safe methods pass without a token, except with a one-time binding, whose token is always checked and consumed.
 
 ## Keys, the builder, and rotation
 
@@ -318,7 +318,7 @@ let csrf = Csrf::builder()
 # }
 ```
 
-- **Expiry is a choice.** By default a token expires twelve hours after it is issued (`lifetime`), which caps how long a leaked token is any use. `no_expiry()` makes a token live as long as the session id it is bound to, the per-session token OWASP describes: your session layer ends it, by rotating the session id at login and ending the session at logout. So the session value must be regenerated at login, never reissued after logout, and never a user or account id. The issue time is still checked against the skew (and a clock past 2156 is refused), a rotated-out key still stops verifying one `lifetime` (or the one-time lifetime, if longer) plus skew after rotation, and one-time tokens always expire; the default one-time lifetime is the same with or without expiry. The trade-off is that a token that leaks stays usable for the rest of its session.
+- **Expiry is a choice.** By default a token expires twelve hours after it is issued (`lifetime`), which caps how long a leaked token is any use. `no_expiry()` makes a token live as long as the session id it is bound to, the per-session token OWASP describes: your session layer ends it, by rotating the session id at login and ending the session at logout. So the session value must be regenerated at login, never reissued after logout, and never a user or account id. The issue time is still checked against the skew (and a clock past 2156 plus the lifetime and skew is refused), a rotated-out key still stops verifying one `lifetime` (or the one-time lifetime, if longer) plus skew after rotation, and one-time tokens always expire; the default one-time lifetime is the same with or without expiry. The trade-off is that a token that leaks stays usable for the rest of its session.
 
   ```rust
   # use csrf_sec::{Csrf, KeyId};
@@ -332,7 +332,7 @@ let csrf = Csrf::builder()
   # }
   ```
 - **Keys are 32 bytes and must be persisted** (or derived from a persisted master, for example a key-vault secret through HKDF). A key generated at boot makes every open form fail after a restart. Keys whose bytes are all equal (an unset buffer) are refused.
-- csrf-sec never MACs with your key directly: it derives one subkey per key id at construction, keeps only that, and wipes it when the `Csrf` is dropped. The key bytes handed to the builder are wiped when the builder is dropped, and the builder's key buffer is reserved for `MAX_KEYS` up front and never grows, so no reallocation leaves a heap copy behind. (Copies a move leaves on the stack, as with any Rust value, are out of reach of safe code.)
+- csrf-sec never MACs with your key directly: it derives one subkey per key id and token kind (session and one-time) at construction, keeps only those, and wipes them when the `Csrf` is dropped. The key bytes handed to the builder are wiped when the builder is dropped, and the builder's key buffer is reserved for `MAX_KEYS` up front and never grows, so no reallocation leaves a heap copy behind. (Copies a move leaves on the stack, as with any Rust value, are out of reach of safe code.)
 - **Rotation on one node:** `csrf.rotated(KeyId(4), new_key)?` returns a new `Csrf` that signs with key 4 and keeps the old signing key as retired for one token lifetime (or the one-time lifetime, if longer) plus skew from now, through the last second of the last token it could have signed. Swap it in; nobody is logged out and no open form fails. (With `no_expiry`, forms older than that fail as `unknown_key` and must be reloaded: rotation is what ends their tokens.) `rotated` reads the clock to set the retire time, and refuses with `Error::Clock` when the clock is outside 2020 to 2156; for an emergency rotation on a host whose clock is broken, build a new `Csrf` with the builder instead (`.key(new_id, new_key)`, leaving the compromised key out).
 - **Rotation across a cluster, in two steps:** first deploy the new key everywhere with `.accept(id, key)` (verify only); once every node has it, make it the signing key with `.key(id, key)` and move the old one to `.retired(..)`. A node never receives a token signed with a key it does not know. On a node built with the accepted key, `rotated(id, same_key)` promotes it.
 - Key ids are never reused while tokens signed under them can still be presented: the builder and `rotated` refuse an id still in use. Up to `MAX_KEYS` (16) keys at once.
@@ -595,10 +595,10 @@ pub enum Error {
     NoSigningKey,            // builder without .key(..)
     MultipleSigningKeys,     // .key(..) given twice
     TooManyKeys,             // more than MAX_KEYS
-    InvalidLifetime,         // under 1 second, over u32::MAX seconds, or a one-time lifetime over the lifetime
+    InvalidLifetime,         // under 1 second, over u32::MAX seconds, or a one-time lifetime over the lifetime (unless no_expiry)
     InvalidSkew,             // longer than the lifetime
     InvalidOrigin,           // allow_origin value is not a serialized origin, or is "null"
-    InvalidRetireTime,       // a retire time past 2156 (milliseconds where seconds were meant)
+    InvalidRetireTime,       // a retire time past 2156 plus the longest token lifetime and skew (milliseconds where seconds were meant)
     EmptySession,            // issue with an empty session id
     Clock,                   // clock outside 2020-01-01 .. 2156-02-07
     Random,                  // the CSPRNG failed; no token is issued
