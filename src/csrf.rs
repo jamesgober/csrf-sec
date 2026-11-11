@@ -10,7 +10,7 @@ use crate::{
     error::Error,
     key::{KEY_LEN, KeyFingerprint, KeyId, KeyInfo, KeyRole, MAX_KEYS, Ring, Slot},
     once::{NONCE_LEN, NonceUse, StoreError},
-    pad::PadSource,
+    pad::RandomSource,
     policy::{Mode, Policy, RequestFacts},
     token::{self, ONCE, SESSION, Token, Window},
     verdict::{OriginCheck, Reason, Rejected, Verdict, Verified},
@@ -79,6 +79,34 @@ impl Csrf {
     /// [`Error::WeakKey`] if all 32 bytes are equal.
     pub fn new(key: [u8; KEY_LEN]) -> Result<Self, Error> {
         Self::builder().key(KeyId(0), key).build()
+    }
+
+    /// A new random key for [`Csrf::new`], from the operating system's
+    /// generator (feature `std`).
+    ///
+    /// Generate it **once**, store it (a secrets manager, a key vault, a file
+    /// only the service can read), and load it at every start: a key
+    /// generated at boot makes every open form fail after a restart, and
+    /// nodes of a cluster must all load the same one. A generator stuck on
+    /// one byte value is caught by [`Csrf::new`] as [`Error::WeakKey`].
+    ///
+    /// ```
+    /// use csrf_sec::Csrf;
+    ///
+    /// let key = Csrf::generate_key()?; // once, then store it
+    /// let csrf = Csrf::new(key)?;      // at every start, with the stored key
+    /// # let _ = csrf;
+    /// # Ok::<(), csrf_sec::Error>(())
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Random`] if the operating system's generator fails.
+    #[cfg(feature = "std")]
+    pub fn generate_key() -> Result<[u8; KEY_LEN], Error> {
+        let mut key = [0u8; KEY_LEN];
+        mod_rand::tier3::fill_bytes(&mut key).map_err(|_| Error::Random)?;
+        Ok(key)
     }
 
     /// Start configuring keys, lifetime, skew, mode, and allowed origins.
@@ -152,21 +180,21 @@ impl Csrf {
     // ---------------------------------------------------------------- Tier 3
 
     /// Issue a token for `binding` at `now` (unix seconds), masked with bytes
-    /// from `pads`. Works without `std`.
+    /// from `random`. Works without `std`.
     ///
     /// For a one-time binding ([`Binding::once`]) the nonce also comes from
-    /// `pads`. Issuing never touches the store.
+    /// `random`. Issuing never touches the store.
     ///
     /// # Errors
     ///
     /// [`Error::EmptySession`] for an empty session id, [`Error::Clock`] when
-    /// `now` is outside 2020 to 2156, [`Error::Random`] when `pads` fails. No
+    /// `now` is outside 2020 to 2156, [`Error::Random`] when `random` fails. No
     /// token is issued on error.
-    pub fn issue_at<P: PadSource + ?Sized>(
+    pub fn issue_at<P: RandomSource + ?Sized>(
         &self,
         binding: &Binding<'_>,
         now: u64,
-        pads: &mut P,
+        random: &mut P,
     ) -> Result<Token, Error> {
         if binding.session.is_empty() {
             return Err(Error::EmptySession);
@@ -174,11 +202,11 @@ impl Csrf {
         let issued_at = token::issued_at(now)?;
         let slot = self.ring.signing();
         if binding.store.is_none() {
-            return token::issue(SESSION, slot, binding, issued_at, &[], pads);
+            return token::issue(SESSION, slot, binding, issued_at, &[], random);
         }
         let mut nonce = [0u8; NONCE_LEN];
-        pads.fill(&mut nonce)?;
-        token::issue(ONCE, slot, binding, issued_at, &nonce, pads)
+        random.fill(&mut nonce)?;
+        token::issue(ONCE, slot, binding, issued_at, &nonce, random)
     }
 
     /// Verify a token against `binding` at `now` (unix seconds). Layer 2 only.
@@ -346,7 +374,7 @@ impl Csrf {
     ///
     /// As [`issue`](Self::issue).
     pub fn issue_with(&self, binding: &Binding<'_>) -> Result<Token, Error> {
-        self.issue_at(binding, unix_now(), &mut crate::OsPads)
+        self.issue_at(binding, unix_now(), &mut crate::OsRandom)
     }
 
     /// Verify a token against `binding` (layer 2 only).
@@ -691,7 +719,7 @@ mod tests {
     const NOW: u64 = EPOCH + 200_000_000;
 
     struct Counter(u8);
-    impl crate::PadSource for Counter {
+    impl crate::RandomSource for Counter {
         fn fill(&mut self, out: &mut [u8]) -> Result<(), Error> {
             for b in out {
                 self.0 = self.0.wrapping_add(37);
@@ -958,7 +986,7 @@ mod tests {
     #[test]
     fn test_issue_at_pad_failure_issues_nothing() {
         struct Broken;
-        impl crate::PadSource for Broken {
+        impl crate::RandomSource for Broken {
             fn fill(&mut self, _: &mut [u8]) -> Result<(), Error> {
                 Err(Error::Random)
             }

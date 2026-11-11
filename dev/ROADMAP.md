@@ -97,6 +97,14 @@ Exit: an independent adversarial review with every finding fixed test-first; the
 - [x] web-net 0.9 (its CSRF step) and gatekeeper-io 0.4 (sign-in) read against csrf-sec 0.9.3 from crates.io (D-101). Two gaps in csrf-sec's guide, both documentation: a scoped token checked without its scope fails as `bad_mac`, and two layers on one request must share a binding; `policy` then `verify` is a supported split, now held equal to `check` in `Strict` by a property test.
 - [x] Integration defects on the other side reported to the WASP coordinator: the login token's scope against web-net's guest binding, web-net's reason codes missing three reasons, gatekeeper-io's refusal signal dropping the reason and severity, and no test that runs the two together.
 
+## v0.10.0 - Simplicity (DONE, 2026-11-11)
+Every public item checked for one-line common uses, plain names, and one way to do each thing (D-102 to D-106). Breaking, with a migration note.
+- [x] `RequestFacts::from_headers`: checking a request is one line, and it reads `Referer` (D-102).
+- [x] `Csrf::generate_key` (D-103).
+- [x] `PadSource` and `OsPads` renamed `RandomSource` and `OsRandom` (D-104).
+- [x] `RequestFacts::with_class`, public `FetchSite`, and `Token::len`/`is_empty` removed (D-105).
+- [x] `docs/API.md` lists every public item: a script checked all 34 exported items and all 60 public functions (D-106).
+
 ## v1.0.0 - Stable
 1.0 freezes the API until 2.0 and the token format for 1.x, and a crates.io version cannot be taken back, so it waits until the API has been used for real. Each item below is required; nothing is ticked on intent.
 

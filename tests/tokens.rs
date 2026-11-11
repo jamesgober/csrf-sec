@@ -9,18 +9,18 @@
 
 use std::time::Duration;
 
-use csrf_sec::{Binding, Csrf, Error, KeyId, PadSource, Reason, TOKEN_LEN};
+use csrf_sec::{Binding, Csrf, Error, KeyId, RandomSource, Reason, TOKEN_LEN};
 
 const KEY: [u8; 32] = *b"integration test key, 32 bytes!!";
 const OTHER_KEY: [u8; 32] = *b"a different key of 32 bytes!!!!!";
 /// 2026-10-21T00:00:00Z.
 const NOW: u64 = 1_792_540_800;
 
-/// Deterministic pad source for reproducible tests (xorshift64*). Not a CSPRNG:
+/// Deterministic random source for reproducible tests (xorshift64*). Not a CSPRNG:
 /// only for tests.
 struct TestPads(u64);
 
-impl PadSource for TestPads {
+impl RandomSource for TestPads {
     fn fill(&mut self, out: &mut [u8]) -> Result<(), Error> {
         for b in out {
             self.0 ^= self.0 >> 12;

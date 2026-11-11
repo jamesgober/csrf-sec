@@ -9,15 +9,13 @@ exclude_re = [
     'replace \^= with \|= in memory::<impl Hasher for NonceHasher>::write$',
     # `builder()` is `Builder::default()`.
     'replace Csrf::builder -> Builder with Default::default\(\)$',
-    # An issued token is never empty, so `is_empty` is always false.
-    'replace Token::is_empty -> bool with false$',
     # Without the length, the Referer fast path is skipped and the full
     # comparison gives the same answer.
     "replace OriginRef<'_>::len -> usize with 0$",
     # The later all-digits test refuses the same inputs.
     'replace \|\| with && in parse_port$',
     # The pool was already advanced; the fallback reads the OS again.
-    'delete match arm Ok\(Ok\(result\)\) in os::<impl PadSource for OsPads>::fill$',
+    'delete match arm Ok\(Ok\(result\)\) in os::<impl RandomSource for OsRandom>::fill$',
     # Wiping the stack copy cannot be observed from safe code.
     'replace wipe with \(\)$',
     # Only skips a scan when nothing can have expired; the scan gives the same

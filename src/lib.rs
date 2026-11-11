@@ -27,18 +27,16 @@
 //! ```
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! use csrf_sec::{Csrf, RequestFacts};
+//! # let headers = std::collections::HashMap::from([("sec-fetch-site", "same-origin")]);
 //!
-//! # let key = *b"an example key, 32 bytes long!!!";
-//! let csrf = Csrf::new(key)?; // a persisted 32-byte secret
+//! # let key = Csrf::generate_key()?;
+//! let csrf = Csrf::new(key)?; // a stored 32-byte key, from Csrf::generate_key() once
 //!
 //! // Rendering a form: 59 characters, different on every call.
 //! let token = csrf.issue("session-id")?;
 //!
 //! // Handling the POST: request policy and token.
-//! let facts = RequestFacts::new("POST")
-//!     .fetch_site("same-origin")
-//!     .origin("https://example.com")
-//!     .own_origin("https://example.com");
+//! let facts = RequestFacts::from_headers("POST", "https://example.com", |name| headers.get(name));
 //! csrf.check(&facts, "session-id", &token)?;
 //!
 //! // Token only, for clients that send no browser headers:
@@ -112,14 +110,14 @@ pub use crate::{
     error::Error,
     key::{KEY_LEN, KeyFingerprint, KeyId, KeyInfo, KeyRole, MAX_KEYS},
     once::{NONCE_LEN, NonceStore, NonceUse, ONCE_TOKEN_LEN, StoreError},
-    pad::PadSource,
-    policy::{FetchSite, MethodClass, Mode, RequestFacts},
+    pad::RandomSource,
+    policy::{MethodClass, Mode, RequestFacts},
     token::{TOKEN_LEN, Token},
     verdict::{OriginCheck, Reason, Rejected, Verdict, Verified},
 };
 
 #[cfg(feature = "std")]
-pub use crate::{once::MemoryStore, pad::OsPads};
+pub use crate::{once::MemoryStore, pad::OsRandom};
 
 /// Crate version string, populated by Cargo at build time.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

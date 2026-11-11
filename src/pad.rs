@@ -9,9 +9,10 @@
 
 use crate::error::Error;
 
-/// A source of cryptographically secure random bytes for token pads.
+/// A source of cryptographically secure random bytes: the per-response mask
+/// of every token, and the nonce of a one-time token.
 ///
-/// Tier 1 and Tier 2 calls use `OsPads` (feature `std`). Implement this trait to supply
+/// Tier 1 and Tier 2 calls use `OsRandom` (feature `std`). Implement this trait to supply
 /// randomness on targets without `std` (a hardware generator, an OS call), and
 /// pass it to [`Csrf::issue_at`](crate::Csrf::issue_at).
 ///
@@ -19,11 +20,11 @@ use crate::error::Error;
 /// [`Error::Random`]; never a partial or predictable fill.
 ///
 /// ```
-/// use csrf_sec::{Error, PadSource};
+/// use csrf_sec::{Error, RandomSource};
 ///
 /// struct Hardware;
 ///
-/// impl PadSource for Hardware {
+/// impl RandomSource for Hardware {
 ///     fn fill(&mut self, out: &mut [u8]) -> Result<(), Error> {
 ///         // read the platform's CSPRNG into `out`
 /// #       out.iter_mut().enumerate().for_each(|(i, b)| *b = i as u8);
@@ -31,7 +32,7 @@ use crate::error::Error;
 ///     }
 /// }
 /// ```
-pub trait PadSource {
+pub trait RandomSource {
     /// Fill `out` with cryptographically secure random bytes.
     ///
     /// # Errors
@@ -41,7 +42,7 @@ pub trait PadSource {
     fn fill(&mut self, out: &mut [u8]) -> Result<(), Error>;
 }
 
-impl<P: PadSource + ?Sized> PadSource for &mut P {
+impl<P: RandomSource + ?Sized> RandomSource for &mut P {
     #[inline]
     fn fill(&mut self, out: &mut [u8]) -> Result<(), Error> {
         (**self).fill(out)
@@ -49,7 +50,7 @@ impl<P: PadSource + ?Sized> PadSource for &mut P {
 }
 
 #[cfg(feature = "std")]
-pub use os::OsPads;
+pub use os::OsRandom;
 
 #[cfg(feature = "std")]
 mod os {
@@ -57,7 +58,7 @@ mod os {
 
     use crypt_io::Zeroizing;
 
-    use super::PadSource;
+    use super::RandomSource;
     use crate::error::Error;
 
     /// Bytes fetched from the OS per refill: about 90 session-token pads for
@@ -77,17 +78,17 @@ mod os {
     /// processes. That does not weaken BREACH protection (pads still differ on
     /// every response within each process, and no attacker sees both
     /// processes' responses for one victim), but long-lived forked workers
-    /// that want separate streams can call [`OsPads::refill`] after the fork.
+    /// that want separate streams can call [`OsRandom::refill`] after the fork.
     ///
     /// ```
-    /// use csrf_sec::{OsPads, PadSource};
+    /// use csrf_sec::{OsRandom, RandomSource};
     ///
     /// let mut pad = [0u8; 22];
-    /// OsPads.fill(&mut pad)?;
+    /// OsRandom.fill(&mut pad)?;
     /// # Ok::<(), csrf_sec::Error>(())
     /// ```
     #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-    pub struct OsPads;
+    pub struct OsRandom;
 
     struct Pool {
         buf: Zeroizing<[u8; POOL_LEN]>,
@@ -132,7 +133,7 @@ mod os {
         mod_rand::tier3::fill_bytes(out).map_err(|_| Error::Random)
     }
 
-    impl OsPads {
+    impl OsRandom {
         /// Discard this thread's buffered bytes and refill from the OS.
         ///
         /// # Errors
@@ -147,7 +148,7 @@ mod os {
         }
     }
 
-    impl PadSource for OsPads {
+    impl RandomSource for OsRandom {
         #[inline]
         fn fill(&mut self, out: &mut [u8]) -> Result<(), Error> {
             // During thread teardown, or if the buffer is somehow in use, read
@@ -161,8 +162,8 @@ mod os {
 
     #[cfg(test)]
     mod tests {
-        use super::{OsPads, POOL_LEN, Pool};
-        use crate::PadSource;
+        use super::{OsRandom, POOL_LEN, Pool};
+        use crate::RandomSource;
 
         fn pool_pos() -> usize {
             super::POOL.with(|p| p.borrow().pos)
@@ -171,12 +172,12 @@ mod os {
         #[test]
         fn test_os_pads_small_requests_come_from_the_pool() {
             let mut pad = [0u8; 22];
-            OsPads.fill(&mut pad).unwrap();
+            OsRandom.fill(&mut pad).unwrap();
             let before = pool_pos();
             assert!(before < POOL_LEN, "the first fill refilled the pool");
-            OsPads.fill(&mut pad).unwrap();
+            OsRandom.fill(&mut pad).unwrap();
             assert_eq!(pool_pos(), before + 22);
-            OsPads::refill().unwrap();
+            OsRandom::refill().unwrap();
             assert_eq!(pool_pos(), 0);
         }
 
@@ -207,13 +208,13 @@ mod os {
         #[test]
         fn test_pad_source_through_a_mutable_reference() {
             struct Ones;
-            impl PadSource for Ones {
+            impl RandomSource for Ones {
                 fn fill(&mut self, out: &mut [u8]) -> Result<(), crate::Error> {
                     out.fill(1);
                     Ok(())
                 }
             }
-            fn via<P: PadSource>(mut p: P) -> [u8; 4] {
+            fn via<P: RandomSource>(mut p: P) -> [u8; 4] {
                 let mut out = [0u8; 4];
                 p.fill(&mut out).unwrap();
                 out
@@ -226,8 +227,8 @@ mod os {
         fn test_os_pads_fill_produces_distinct_pads() {
             let mut a = [0u8; 22];
             let mut b = [0u8; 22];
-            OsPads.fill(&mut a).unwrap();
-            OsPads.fill(&mut b).unwrap();
+            OsRandom.fill(&mut a).unwrap();
+            OsRandom.fill(&mut b).unwrap();
             assert_ne!(a, b);
             assert_ne!(a, [0u8; 22]);
         }
@@ -262,9 +263,9 @@ mod os {
 
         #[test]
         fn test_os_pads_refill_then_fill() {
-            OsPads::refill().unwrap();
+            OsRandom::refill().unwrap();
             let mut pad = [0u8; 16];
-            OsPads.fill(&mut pad).unwrap();
+            OsRandom.fill(&mut pad).unwrap();
             assert_ne!(pad, [0u8; 16]);
         }
 
@@ -272,13 +273,13 @@ mod os {
         fn test_os_pads_threads_get_independent_streams() {
             let a = std::thread::spawn(|| {
                 let mut p = [0u8; 22];
-                OsPads.fill(&mut p).unwrap();
+                OsRandom.fill(&mut p).unwrap();
                 p
             })
             .join()
             .unwrap();
             let mut b = [0u8; 22];
-            OsPads.fill(&mut b).unwrap();
+            OsRandom.fill(&mut b).unwrap();
             assert_ne!(a, b);
         }
     }

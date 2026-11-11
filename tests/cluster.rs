@@ -19,8 +19,8 @@ use std::{
 };
 
 use csrf_sec::{
-    Binding, Csrf, Error, KeyId, MemoryStore, NonceStore, NonceUse, PadSource, Reason, StoreError,
-    Token,
+    Binding, Csrf, Error, KeyId, MemoryStore, NonceStore, NonceUse, RandomSource, Reason,
+    StoreError, Token,
 };
 
 const KEY_0: [u8; 32] = *b"cluster tests, key zero, 32 b..!";
@@ -32,7 +32,7 @@ const SKEW: u64 = 60;
 
 struct TestPads(u64);
 
-impl PadSource for TestPads {
+impl RandomSource for TestPads {
     fn fill(&mut self, out: &mut [u8]) -> Result<(), Error> {
         for b in out {
             self.0 ^= self.0 >> 12;

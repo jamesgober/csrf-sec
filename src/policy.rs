@@ -63,15 +63,8 @@ impl MethodClass {
 /// The value of the `Sec-Fetch-Site` request header.
 ///
 /// ```
-/// use csrf_sec::FetchSite;
-///
-/// assert_eq!(FetchSite::parse(b"cross-site"), Some(FetchSite::CrossSite));
-/// assert_eq!(FetchSite::parse(b"same-origin "), Some(FetchSite::SameOrigin));
-/// assert_eq!(FetchSite::parse(b"Same-Origin"), None);
-/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[non_exhaustive]
-pub enum FetchSite {
+pub(crate) enum FetchSite {
     /// The request came from a page of the same origin.
     SameOrigin,
     /// The request came from another origin of the same site (a sibling
@@ -88,7 +81,7 @@ impl FetchSite {
     /// value itself must match exactly. Anything else is `None` (and is then
     /// treated as if the header were absent, never as same-origin).
     #[must_use]
-    pub fn parse(value: &[u8]) -> Option<Self> {
+    pub(crate) fn parse(value: &[u8]) -> Option<Self> {
         match trim(value) {
             b"same-origin" => Some(Self::SameOrigin),
             b"same-site" => Some(Self::SameSite),
@@ -112,12 +105,19 @@ fn trim(mut v: &[u8]) -> &[u8] {
 
 /// The facts about a request that layer 1 decides on.
 ///
-/// Fill in what the request carried; leave out what it did not. Values are
-/// raw header bytes. An empty value counts as absent.
+/// [`from_headers`](Self::from_headers) builds them in one call from a header
+/// lookup. Without one, start from [`new`](Self::new) and fill in what the
+/// request carried. Values are raw header bytes; an empty value counts as
+/// absent.
 ///
 /// ```
+/// use std::collections::HashMap;
 /// use csrf_sec::RequestFacts;
 ///
+/// let headers = HashMap::from([("sec-fetch-site", "same-origin"), ("origin", "https://example.com")]);
+/// let facts = RequestFacts::from_headers("POST", "https://example.com", |name| headers.get(name));
+///
+/// // The same, one header at a time:
 /// let facts = RequestFacts::new("POST")
 ///     .fetch_site("same-origin")
 ///     .origin("https://example.com")
@@ -135,22 +135,56 @@ pub struct RequestFacts<'a> {
 
 impl<'a> RequestFacts<'a> {
     /// Facts for a request with this method (classified with
-    /// [`MethodClass::classify`]).
+    /// [`MethodClass::classify`]), and nothing else yet.
     #[must_use]
     pub fn new<M: AsRef<[u8]> + ?Sized>(method: &M) -> Self {
-        Self::with_class(MethodClass::classify(method.as_ref()))
-    }
-
-    /// Facts for a request whose method the adapter already classified.
-    #[must_use]
-    pub const fn with_class(method: MethodClass) -> Self {
         Self {
-            method,
+            method: MethodClass::classify(method.as_ref()),
             fetch_site: None,
             origin: None,
             referer: None,
             own_origin: None,
         }
+    }
+
+    /// Facts for a request in one call: its method, this site's own origin
+    /// (as in [`own_origin`](Self::own_origin)), and `header`, which returns
+    /// a request header's value by its lowercase name, or `None` when the
+    /// request did not carry it. It is asked for `sec-fetch-site`, `origin`,
+    /// and `referer`. Header names are case-insensitive in HTTP, so the
+    /// lookup should be too.
+    ///
+    /// ```
+    /// use std::collections::HashMap;
+    /// use csrf_sec::{Csrf, RequestFacts};
+    ///
+    /// let csrf = Csrf::new(*b"an example key, 32 bytes long!!!")?;
+    /// let token = csrf.issue("session-1")?;
+    /// let headers = HashMap::from([("sec-fetch-site", "same-origin")]);
+    ///
+    /// let facts = RequestFacts::from_headers("POST", "https://example.com", |name| headers.get(name));
+    /// assert!(csrf.check(&facts, "session-1", &token).is_ok());
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    #[must_use]
+    pub fn from_headers<M, O, V, F>(method: &M, own_origin: &'a O, mut header: F) -> Self
+    where
+        M: AsRef<[u8]> + ?Sized,
+        O: AsRef<[u8]> + ?Sized,
+        V: AsRef<[u8]> + ?Sized + 'a,
+        F: FnMut(&str) -> Option<&'a V>,
+    {
+        let mut facts = Self::new(method).own_origin(own_origin);
+        if let Some(v) = header("sec-fetch-site") {
+            facts = facts.fetch_site(v);
+        }
+        if let Some(v) = header("origin") {
+            facts = facts.origin(v);
+        }
+        if let Some(v) = header("referer") {
+            facts = facts.referer(v);
+        }
+        facts
     }
 
     /// The `Sec-Fetch-Site` header value.

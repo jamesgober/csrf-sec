@@ -76,7 +76,7 @@ def varint(n):
 
 
 def token(version, kid, session, scope, issued_at, pads):
-    """pads: the PadSource byte stream (bytes 0, 1, 2, ...)."""
+    """pads: the RandomSource byte stream (bytes 0, 1, 2, ...)."""
     subkey = blake3(LABEL[version] + bytes([kid]), KEY)
     nonce = b''
     if version == 2:

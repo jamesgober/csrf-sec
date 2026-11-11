@@ -1,7 +1,8 @@
 //! Property tests for the invariants in `dev/DIRECTIVES.md` section 4.
 
 use csrf_sec::{
-    Binding, Csrf, Error, KeyId, NonceStore, NonceUse, PadSource, Reason, RequestFacts, StoreError,
+    Binding, Csrf, Error, KeyId, NonceStore, NonceUse, RandomSource, Reason, RequestFacts,
+    StoreError,
 };
 use proptest::prelude::*;
 
@@ -9,7 +10,7 @@ const NOW: u64 = 1_792_540_800;
 
 struct SeedPads(u64);
 
-impl PadSource for SeedPads {
+impl RandomSource for SeedPads {
     fn fill(&mut self, out: &mut [u8]) -> Result<(), Error> {
         for b in out {
             self.0 = self

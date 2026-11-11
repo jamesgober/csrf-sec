@@ -13,7 +13,7 @@ use std::{
 
 use csrf_sec::{
     Binding, Csrf, Error, KeyId, MemoryStore, Mode, NonceStore, NonceUse, ONCE_TOKEN_LEN,
-    PadSource, Reason, RequestFacts, StoreError,
+    RandomSource, Reason, RequestFacts, StoreError,
 };
 
 const KEY: [u8; 32] = *b"one-time token tests, 32 bytes!!";
@@ -21,7 +21,7 @@ const NOW: u64 = 1_792_540_800;
 
 struct TestPads(u64);
 
-impl PadSource for TestPads {
+impl RandomSource for TestPads {
     fn fill(&mut self, out: &mut [u8]) -> Result<(), Error> {
         for b in out {
             self.0 ^= self.0 >> 12;

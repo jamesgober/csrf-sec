@@ -22,7 +22,7 @@ use std::{
     thread,
 };
 
-use csrf_sec::{Csrf, FIELD_NAME, OsPads, PadSource, RequestFacts};
+use csrf_sec::{Csrf, FIELD_NAME, OsRandom, RandomSource, RequestFacts};
 
 /// This site's origin, as the browser addresses it.
 const SITE: &str = "http://localhost:7878";
@@ -105,7 +105,7 @@ fn respond(stream: &mut TcpStream, status: &str, extra: &str, body: &str) {
 
 fn new_session_id() -> String {
     let mut seed = [0u8; 16];
-    let _ = OsPads.fill(&mut seed);
+    let _ = OsRandom.fill(&mut seed);
     seed.iter().fold(String::with_capacity(32), |mut id, b| {
         let _ = write!(id, "{b:02x}");
         id
@@ -127,11 +127,8 @@ fn site(csrf: &Csrf, mut stream: TcpStream) {
     };
 
     // The adapter's whole job: hand csrf-sec the facts as plain values.
-    let facts = RequestFacts::new(&req.method)
-        .fetch_site(req.header("sec-fetch-site"))
-        .origin(req.header("origin"))
-        .referer(req.header("referer"))
-        .own_origin(SITE);
+    // An absent header reads as "", which csrf-sec treats as absent.
+    let facts = RequestFacts::from_headers(&req.method, SITE, |name| Some(req.header(name)));
 
     if req.method == "POST" {
         let token = req.form_field(FIELD_NAME);
@@ -197,11 +194,9 @@ fn attacker(mut stream: TcpStream) {
 }
 
 fn main() -> std::io::Result<()> {
-    // A real service loads a persisted key; the demo makes one per run.
-    let mut key = [0u8; 32];
-    OsPads
-        .fill(&mut key)
-        .map_err(|e| std::io::Error::other(e.to_string()))?;
+    // A real service generates its key once, stores it, and loads it at every
+    // start; the demo makes one per run.
+    let key = Csrf::generate_key().map_err(|e| std::io::Error::other(e.to_string()))?;
     let csrf = Arc::new(Csrf::new(key).map_err(|e| std::io::Error::other(e.to_string()))?);
 
     let bank = TcpListener::bind("127.0.0.1:7878")?;

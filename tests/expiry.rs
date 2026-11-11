@@ -4,7 +4,9 @@
 
 use std::time::Duration;
 
-use csrf_sec::{Binding, Csrf, Error, KeyId, NonceStore, NonceUse, PadSource, Reason, StoreError};
+use csrf_sec::{
+    Binding, Csrf, Error, KeyId, NonceStore, NonceUse, RandomSource, Reason, StoreError,
+};
 
 const KEY: [u8; 32] = *b"optional expiry tests, 32 bytes!";
 const NOW: u64 = 1_792_540_800;
@@ -12,7 +14,7 @@ const YEAR: u64 = 365 * 86_400;
 
 struct Pads(u64);
 
-impl PadSource for Pads {
+impl RandomSource for Pads {
     fn fill(&mut self, out: &mut [u8]) -> Result<(), Error> {
         for b in out {
             self.0 = self

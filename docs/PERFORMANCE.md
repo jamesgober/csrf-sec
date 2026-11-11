@@ -21,7 +21,7 @@ Every number on this page is **measured** unless it says otherwise. Reproduce th
 - **Machine:** AMD Ryzen 9 9950X3D, Linux 6.6 (WSL2), Rust 1.99.0, `--release` with fat LTO and one codegen unit (the crate's release profile).
 - **Harness:** `criterion` 0.7, 1 s warm-up, 3 to 4 s measurement, the median of the reported interval.
 - **Inputs:** a 44-character session id, no scope unless stated, the default 12-hour lifetime.
-- `issue_at` benchmarks use a deterministic pad source so they measure the token work; `issue` uses the system clock and `OsPads`, as a server does.
+- `issue_at` benchmarks use a deterministic random source so they measure the token work; `issue` uses the system clock and `OsRandom`, as a server does.
 - Numbers taken on Windows with this machine's local linker setup (`rust-lld` against an older C runtime) ran up to 60 ns slower on paths that copy small buffers, because of that runtime's `memcpy`; the same code on Linux does not show it, and Windows builds with the standard MSVC linker do not use that runtime. Linux numbers are the reference.
 
 ## Per call
@@ -31,7 +31,7 @@ Every number on this page is **measured** unless it says otherwise. Reproduce th
 | `verify_at` (valid token) | 110 ns | decode 30 ns + keyed BLAKE3 75 ns + the rest |
 | `verify` (system clock) | 142 ns | adds one system clock read |
 | `issue_at` | 112 ns | keyed BLAKE3 75 ns + encode 20 ns + masking |
-| `issue` (system clock, `OsPads`) | 167 ns | adds one clock read and a 22-byte pad from the per-thread OS buffer |
+| `issue` (system clock, `OsRandom`) | 167 ns | adds one clock read and a 22-byte pad from the per-thread OS buffer |
 | `check_at`, `Strict`, origin match + token | 150 ns | |
 | `check_at`, cross-site refused | 23 ns | refused before any token work |
 | layer 1, `Sec-Fetch-Site` | 1.3 ns | the modern-browser path |
@@ -39,10 +39,10 @@ Every number on this page is **measured** unless it says otherwise. Reproduce th
 | layer 1, `Referer` match | 23 ns | byte-identical to `own_origin`: one parse |
 | layer 1, cross-site refused | 19 ns | with an allowlist to consult; without one, no parsing at all |
 | `RequestFacts` from raw headers | 2.9 ns | |
-| one-time `issue_at` | 198 ns | a 16-byte nonce from the pad source, a second compression block |
+| one-time `issue_at` | 198 ns | a 16-byte nonce from the random source, a second compression block |
 | one-time `issue_at` + `verify_at`, allocation-free store | 429 ns | |
 | one-time `issue_at` + `verify_at`, `MemoryStore` | 574 ns | adds a shard lock and a hash map insert; steady state, every verify passing, expired records dropped as the session reaches its quota |
-| `OsPads`, 22 bytes | 28 ns | Linux `getrandom` throughput is the floor; about 8 ns on Windows |
+| `OsRandom`, 22 bytes | 28 ns | Linux `getrandom` throughput is the floor; about 8 ns on Windows |
 | `Csrf::new` | 212 ns | subkey derivation, once per process |
 
 ### Rejections
