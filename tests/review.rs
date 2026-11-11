@@ -669,6 +669,15 @@ fn r4_f1_empty_per_request_origin_fails_closed() {
             "{origin}"
         );
     }
+    // The same through a Referer: its origin part is compared, never an
+    // empty slice against the empty override.
+    let referer = RequestFacts::new("POST")
+        .referer("https://example.com/form")
+        .own_origin("");
+    assert_eq!(
+        c.policy(&referer).unwrap_err().reason(),
+        Reason::OriginMismatch
+    );
     let other_site = RequestFacts::new("POST")
         .origin("https://shop.example")
         .own_origin("https://shop.example");

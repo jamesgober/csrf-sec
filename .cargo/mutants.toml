@@ -9,9 +9,10 @@ exclude_re = [
     'replace \^= with \|= in memory::<impl Hasher for NonceHasher>::write$',
     # `builder()` is `Builder::default()`.
     'replace Csrf::builder -> Builder with Default::default\(\)$',
-    # Without the length, the Referer fast path is skipped and the full
-    # comparison gives the same answer.
-    "replace OriginRef<'_>::len -> usize with 0$",
+    # Without the byte-identical fast path for a per-request own origin, the
+    # full parse and comparison give the same answer: the bytes already parsed
+    # as an origin (`allows` returns early otherwise), so they parse the same.
+    'replace match guard own == raw with false in Policy::allows$',
     # The later all-digits test refuses the same inputs.
     'replace \|\| with && in parse_port$',
     # The pool was already advanced; the fallback reads the OS again.
