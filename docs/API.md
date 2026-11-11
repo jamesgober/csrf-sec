@@ -16,7 +16,7 @@
 
 A task-oriented tour of the API, Tier 1 first. The rustdoc on [docs.rs](https://docs.rs/csrf-sec) is the item-by-item reference. Every `rust` example in this file is compiled and run as a doctest, so it matches the build; lines starting with `#` are setup hidden in rustdoc.
 
-> **Status: `0.10.0`, release candidate.** The API on this page is the 1.0 candidate; `1.0` will freeze it (additions only until `2.0`) and the token format, on the terms in the README. Every cost below is a measurement from [`PERFORMANCE.md`](./PERFORMANCE.md) (Linux, Ryzen 9 9950X3D) unless marked as an estimate.
+> **Status: `0.11.0`, release candidate.** The API on this page is the 1.0 candidate; `1.0` will freeze it (additions only until `2.0`) and the token format, on the terms in the README. Every cost below is a measurement from [`PERFORMANCE.md`](./PERFORMANCE.md) (Linux, Ryzen 9 9950X3D) unless marked as an estimate.
 
 - [Setup](#setup)
 - [Tier 1: three calls](#tier-1-three-calls)
@@ -42,7 +42,7 @@ A task-oriented tour of the API, Tier 1 first. The rustdoc on [docs.rs](https://
 
 ```toml
 [dependencies]
-csrf-sec = "0.10"
+csrf-sec = "0.11"
 ```
 
 `csrf-sec` has one job: decide whether a state-changing request came from your own page, for this session.
@@ -58,7 +58,7 @@ use csrf_sec::{Csrf, RequestFacts};
 # let session_id = "session-1";
 # let headers = std::collections::HashMap::from([("sec-fetch-site", "same-origin")]);
 
-let csrf = Csrf::new(key)?;                     // key: [u8; 32], stored (from Csrf::generate_key, once)
+let csrf = Csrf::new(key, "https://example.com")?; // key: [u8; 32], stored (from Csrf::generate_key, once); this site's origin
 
 // Rendering a page with a form:
 let token = csrf.issue(session_id)?;            // 59 characters, different on every call
@@ -68,7 +68,7 @@ let token = csrf.issue(session_id)?;            // 59 characters, different on e
 csrf.verify(session_id, submitted)?;
 
 // Handling the POST (recommended: request policy and token):
-let facts = RequestFacts::from_headers("POST", "https://example.com", |name| headers.get(name));
+let facts = RequestFacts::from_headers("POST", |name| headers.get(name));
 csrf.check(&facts, session_id, submitted)?;
 # Ok(())
 # }
@@ -77,8 +77,8 @@ csrf.check(&facts, session_id, submitted)?;
 | Call | Returns | Cost (measured) |
 |---|---|---|
 | `Csrf::generate_key()` | `Result<[u8; 32], Error>` | once, ever: store the key |
-| `Csrf::new(key)` | `Result<Csrf, Error>` | 212 ns, once per process |
-| `RequestFacts::from_headers(method, own_origin, lookup)` | `RequestFacts` | reads `Sec-Fetch-Site`, `Origin`, `Referer` |
+| `Csrf::new(key, own_origin)` | `Result<Csrf, Error>` | 212 ns, once per process |
+| `RequestFacts::from_headers(method, lookup)` | `RequestFacts` | reads `Sec-Fetch-Site`, `Origin`, `Referer` |
 | `csrf.issue(session)` | `Result<Token, Error>` | 167 ns; no allocation |
 | `csrf.verify(session, token)` | `Verdict` = `Result<Verified, Rejected>` | 142 ns; no allocation, no lock |
 | `csrf.check(&facts, session, token)` | `Verdict` | 150 ns (`_at`, `Origin` + token); a cross-site refusal 23 ns |
@@ -107,7 +107,7 @@ A `Token` is the masked text you put in a hidden form field (`FIELD_NAME`) or a 
 
 ```rust
 # fn main() -> Result<(), Box<dyn std::error::Error>> {
-# let csrf = csrf_sec::Csrf::new(*b"an example key, 32 bytes long!!!")?;
+# let csrf = csrf_sec::Csrf::new(*b"an example key, 32 bytes long!!!", "https://example.com")?;
 # let session_id = "session-1";
 let token = csrf.issue(session_id)?;
 let html = format!(r#"<input type="hidden" name="{}" value="{}">"#, csrf_sec::FIELD_NAME, token);
@@ -146,7 +146,7 @@ impl Csrf {
   ```rust
   # use csrf_sec::{Binding, Csrf, Reason};
   # fn main() -> Result<(), Box<dyn std::error::Error>> {
-  # let csrf = Csrf::new(*b"an example key, 32 bytes long!!!")?;
+  # let csrf = Csrf::new(*b"an example key, 32 bytes long!!!", "https://example.com")?;
   # let session_id = "session-1";
   let change_email = Binding::new(session_id).scope("POST /account/email");
   let token = csrf.issue_with(&change_email)?;
@@ -164,7 +164,7 @@ impl Csrf {
   ```rust
   # use csrf_sec::{Binding, Csrf, Reason};
   # fn main() -> Result<(), Box<dyn std::error::Error>> {
-  # let csrf = Csrf::new(*b"an example key, 32 bytes long!!!")?;
+  # let csrf = Csrf::new(*b"an example key, 32 bytes long!!!", "https://example.com")?;
   let old_tab = csrf.issue("guest-session")?;
   let after_login = Binding::new("user-session").previous_session("guest-session");
   let refused = csrf.verify_with(&after_login, &old_tab).unwrap_err();
@@ -184,13 +184,13 @@ Cost of a scope or previous session: only failing tokens pay for the extra MACs 
 pub struct RequestFacts<'a> { /* borrowed */ }
 
 impl<'a> RequestFacts<'a> {
-    pub fn from_headers<M, O, V, F>(method: &M, own_origin: &'a O, header: F) -> Self
+    pub fn from_headers<M, V, F>(method: &M, header: F) -> Self
     where F: FnMut(&str) -> Option<&'a V>;                               // one call: asks for sec-fetch-site, origin, referer
     pub fn new<M: AsRef<[u8]> + ?Sized>(method: &M) -> Self;          // classifies the method; fill in the rest:
     pub fn fetch_site<V: AsRef<[u8]> + ?Sized>(self, value: &V) -> Self;     // Sec-Fetch-Site
     pub fn origin<V: AsRef<[u8]> + ?Sized>(self, value: &'a V) -> Self;      // Origin
     pub fn referer<V: AsRef<[u8]> + ?Sized>(self, value: &'a V) -> Self;     // Referer (full URL)
-    pub fn own_origin<V: AsRef<[u8]> + ?Sized>(self, value: &'a V) -> Self;  // this site, e.g. "https://example.com"
+    pub fn own_origin<V: AsRef<[u8]> + ?Sized>(self, value: &'a V) -> Self;  // one Csrf, several sites: this request's site
     pub const fn method(&self) -> MethodClass;
 }
 
@@ -200,7 +200,7 @@ impl MethodClass { pub const fn classify(method: &[u8]) -> MethodClass; }
 
 ```
 
-`from_headers` covers the common case: it asks the lookup for each header by its lowercase name (HTTP names are case-insensitive, so the lookup should be too), and `None` means the request did not carry it. Without a lookup function, `new` and the setters do the same, one header at a time. The adapter fills only what the request carried. Values are raw header bytes; nothing needs to be decoded first. An empty value counts as absent.
+`from_headers` covers the common case: it asks the lookup for each header by its lowercase name (HTTP names are case-insensitive, so the lookup should be too), and `None` means the request did not carry it. Without a lookup function, `new` and the setters do the same, one header at a time. The adapter fills only what the request carried. Values are raw header bytes, trimmed of surrounding spaces and tabs; nothing needs to be decoded first. An empty value counts as absent. The site's own origin is configuration (`Csrf::new(key, own_origin)` or `Builder::own_origin`), required in `Strict` and `PolicyOnly`; `RequestFacts::own_origin` overrides it per request for one `Csrf` serving several sites, and a value given there that is empty or malformed matches nothing.
 
 - Methods are classified case-sensitively: exactly `GET`, `HEAD`, and `OPTIONS` are safe; everything else, including `get`, `TRACE`, and unknown methods, is unsafe. A handler that changes state must be reached only through an unsafe method (T13); csrf-sec cannot see your routes, so this is your router's contract.
 - `Sec-Fetch-Site` values other than the four defined ones are treated as absent, never as same-origin. Surrounding spaces and tabs are ignored.
@@ -212,27 +212,27 @@ impl MethodClass { pub const fn classify(method: &[u8]) -> MethodClass; }
  Sec-Fetch-Site: same-origin | none            -> pass
  Sec-Fetch-Site: same-site                     -> pass if allow_same_site, or Origin is allowlisted; else CrossSite
  Sec-Fetch-Site: cross-site                    -> pass if Origin is allowlisted; else CrossSite
- no Fetch Metadata, Origin present             -> "null" or no match: OriginMismatch; match: pass
- no Fetch Metadata, no Origin, Referer present -> its origin matches: pass; else OriginMismatch
+ no Fetch Metadata, Origin present             -> own origin or allowlisted: pass; else OriginMismatch
+ no Fetch Metadata, no Origin, Referer present -> its origin own or allowlisted: pass; else OriginMismatch
  nothing at all                                -> the token decides (Strict), Unverifiable (PolicyOnly)
 ```
 
-Without Fetch Metadata, an origin is allowed when it equals `own_origin` or an origin added with `Builder::allow_origin`. An `own_origin` that is given but malformed (a trailing slash, a missing scheme) matches nothing, so the request is refused rather than left to the token. With `Sec-Fetch-Site: same-site` or `cross-site`, only the allowlist counts: the browser has already said another site sent the request, so the site's own origin cannot vouch for it (and with no allowlist the refusal needs no parsing at all). Origins compare scheme and host ASCII case-insensitively, with default ports (`:80` for http and ws, `:443` for https and wss) normalized, anything that is not a well-formed serialized origin refused. A `Referer` with user information (`https://a@b/`) never matches. When nothing is configured to compare against (no `own_origin`, no allowlist), a well-formed `Origin` or `Referer` cannot be judged and the token decides; `null` and malformed values are still refused. Values longer than 4 KiB never match. Cost (measured): 1.3 ns on `Sec-Fetch-Site`, 23 ns on a `Referer` match, 37 ns on an `Origin` match, 19 ns for a cross-site refusal; no allocation.
+Without Fetch Metadata, an origin is allowed when it equals the own origin or an origin added with `Builder::allow_origin`. The own origin is configured, and `build` refuses one that is empty or malformed (a trailing slash, a missing scheme), so there is always something to compare with; a per-request override that is empty or malformed matches nothing, so the request is refused rather than left to the token. With `Sec-Fetch-Site: same-site` or `cross-site`, only the allowlist counts: the browser has already said another site sent the request, so the site's own origin cannot vouch for it (and with no allowlist the refusal needs no parsing at all). Origins compare scheme and host ASCII case-insensitively, with default ports (`:80` for http and ws, `:443` for https and wss) normalized, anything that is not a well-formed serialized origin refused. A `Referer` with user information (`https://a@b/`) never matches. With nothing to compare against (only possible in `TokenOnly`, where `policy` is advisory), an `Origin` or `Referer` is refused, never left to the token. Values longer than 4 KiB never match. Cost (measured): 1.3 ns on `Sec-Fetch-Site`, 23 ns on a `Referer` match, 37 ns on an `Origin` match, 19 ns for a cross-site refusal; no allocation.
 
 ```rust
 # use csrf_sec::{Csrf, OriginCheck, Reason, RequestFacts};
 # fn main() -> Result<(), Box<dyn std::error::Error>> {
-# let csrf = Csrf::new(*b"an example key, 32 bytes long!!!")?;
+# let csrf = Csrf::new(*b"an example key, 32 bytes long!!!", "https://example.com")?;
 let attack = RequestFacts::new("POST")
     .fetch_site("cross-site")
-    .origin("https://evil.example")
-    .own_origin("https://example.com");
+    .origin("https://evil.example");
 assert_eq!(csrf.policy(&attack).unwrap_err().reason(), Reason::CrossSite);
 
-let old_browser = RequestFacts::new("POST")
-    .origin("https://example.com")
-    .own_origin("https://example.com");
+let old_browser = RequestFacts::new("POST").origin("https://example.com");
 assert_eq!(csrf.policy(&old_browser)?, OriginCheck::Origin);
+
+let old_attack = RequestFacts::new("POST").origin("https://evil.example");
+assert_eq!(csrf.policy(&old_attack).unwrap_err().reason(), Reason::OriginMismatch);
 # Ok(())
 # }
 ```
@@ -288,6 +288,7 @@ impl Builder {
     pub fn once_lifetime(self, lifetime: Duration) -> Self;                 // default 1 hour or the lifetime if shorter; at most the lifetime unless no_expiry
     pub fn skew(self, skew: Duration) -> Self;                              // default 60 seconds
     pub fn mode(self, mode: Mode) -> Self;                                  // default Strict
+    pub fn own_origin(self, origin: &str) -> Self;                          // this site; required in Strict and PolicyOnly
     pub fn allow_origin(self, origin: &str) -> Self;
     pub fn allow_same_site(self, allow: bool) -> Self;                      // default false; trusts every subdomain
     pub fn build(self) -> Result<Csrf, Error>;
@@ -302,6 +303,7 @@ use csrf_sec::{Csrf, KeyId, Mode};
 # let retire_at = 1_900_000_000;
 
 let csrf = Csrf::builder()
+    .own_origin("https://example.com")
     .key(KeyId(3), current_key)
     .retired(KeyId(2), old_key, retire_at)
     .lifetime(Duration::from_secs(12 * 3600))
@@ -321,6 +323,7 @@ let csrf = Csrf::builder()
   # use csrf_sec::{Csrf, KeyId};
   # fn main() -> Result<(), csrf_sec::Error> {
   let csrf = Csrf::builder()
+      .own_origin("https://example.com")
       .key(KeyId(0), *b"an example key, 32 bytes long!!!")
       .no_expiry()
       .build()?;
@@ -337,7 +340,7 @@ let csrf = Csrf::builder()
 ```rust
 # use csrf_sec::{Csrf, KeyId};
 # fn main() -> Result<(), Box<dyn std::error::Error>> {
-let csrf = Csrf::new(*b"first key, thirty-two bytes long")?;
+let csrf = Csrf::new(*b"first key, thirty-two bytes long", "https://example.com")?;
 let token = csrf.issue("session-1")?;
 
 let csrf = csrf.rotated(KeyId(1), *b"second key, 32 bytes long......!")?;
@@ -373,8 +376,8 @@ pub struct KeyId(pub u8);                                         // Display: th
 ```rust
 # use csrf_sec::{Csrf, KeyId, KeyRole};
 # fn main() -> Result<(), csrf_sec::Error> {
-let node_a = Csrf::builder().key(KeyId(1), *b"shared cluster key, 32 bytes!!!!").build()?;
-let node_b = Csrf::builder().key(KeyId(1), *b"shared cluster key, 32 bytes!!!!").build()?;
+let node_a = Csrf::builder().own_origin("https://example.com").key(KeyId(1), *b"shared cluster key, 32 bytes!!!!").build()?;
+let node_b = Csrf::builder().own_origin("https://example.com").key(KeyId(1), *b"shared cluster key, 32 bytes!!!!").build()?;
 assert_eq!(node_a.key_fingerprint(KeyId(1)), node_b.key_fingerprint(KeyId(1)));
 
 for key in node_a.keys() {
@@ -392,7 +395,7 @@ For actions where a token must not be usable twice (a payment, deleting an accou
 ```rust
 use csrf_sec::{Binding, Csrf, MemoryStore, Reason};
 # fn main() -> Result<(), Box<dyn std::error::Error>> {
-# let csrf = Csrf::new(*b"an example key, 32 bytes long!!!")?;
+# let csrf = Csrf::new(*b"an example key, 32 bytes long!!!", "https://example.com")?;
 # let session_id = "session-1";
 
 let store = MemoryStore::new(100_000);      // at startup; shared by every request
@@ -450,7 +453,7 @@ One-time tokens have their own lifetime: one hour by default, or the general lif
 
 **Nodes that share a store must use the same one-time lifetime.** The record's expiry is set by the node that consumed the token, from its own `once_lifetime`, and the token does not carry it. A node with a longer one-time lifetime would accept a token again after a shorter-lived node's record expired. Configure it once for the whole cluster, as you do the keys: set it explicitly and compare `once_lifetime()` across nodes, as you compare key fingerprints. To change it, switch every node at once, or accept that tokens used during the rollout may be presented once more to the nodes with the longer setting. (Upgrading from 0.8: see the 0.9.0 entry in `CHANGELOG.md`.)
 
-The store contract: `consume` **atomically** records the nonce and returns `Ok(true)` only for its first use. `Ok(false)` (already recorded, or the store cannot vouch that it was not) refuses the request as `AlreadyUsed`; `Err(StoreError::SessionLimit)` refuses it as `TooManyUses`, and any other `Err` as `StoreUnavailable`. Two concurrent calls for one nonce must not both return `Ok(true)`: in a key-value store, set-if-absent with an expiry of `expires_at`.
+The store contract: `consume` **atomically** records the nonce and returns `Ok(true)` only for its first use. `Ok(false)` (already recorded) refuses the request as `AlreadyUsed`; `Err(StoreError::Forgotten)` (the store cannot vouch that it was not used: the token predates the store's memory, or records it dropped) refuses it as `Forgotten`, which is benign; `Err(StoreError::SessionLimit)` refuses it as `TooManyUses`, and any other `Err` as `StoreUnavailable`. Two concurrent calls for one nonce must not both return `Ok(true)`: in a key-value store, set-if-absent with an expiry of `expires_at`.
 
 `MemoryStore` serves one node and tests: 64 shards, each behind its own short-held lock, with all of one session's records in one shard. **Each session may hold at most 64 records at once** (`with_session_limit`), so one session, even an attacker's, cannot fill the store for everyone else; a session at its limit is refused (`TooManyUses`) until its records expire. Each shard holds at most `capacity / 64` (rounded up) records, and a session at most an eighth of a shard whatever its limit, but always at least one record (`session_limit()` reports the limit in force), so in a store of 512 records or more filling a shard takes at least eight sessions: **size the store at 512 times the session limit or more** (32,768 records, about 2 MB, for the default). When a shard or a session is full, expired records are dropped first; if none has expired, the use is refused at once, without scanning, rather than forgetting a used token: a full session as `TooManyUses`, a full shard as `StoreUnavailable`. A dropped record is remembered by its expiry: a later use expiring no later than a dropped record is refused as `AlreadyUsed`, which never refuses a valid token on a clock that only moves forward, and stops a used token from passing again on a node whose clock stepped back after the purge. About 60 bytes per record [est.].
 
@@ -501,7 +504,7 @@ impl Csrf {
 ```rust
 # use csrf_sec::{Binding, Csrf, OsRandom, Reason};
 # fn main() -> Result<(), Box<dyn std::error::Error>> {
-# let csrf = Csrf::new(*b"an example key, 32 bytes long!!!")?;
+# let csrf = Csrf::new(*b"an example key, 32 bytes long!!!", "https://example.com")?;
 let now = 1_800_000_000; // unix seconds, from your clock
 let binding = Binding::new("session-1");
 let token = csrf.issue_at(&binding, now, &mut OsRandom)?;
@@ -557,7 +560,8 @@ impl Reason {
 | `CrossSite` | `cross_site` | layer 1: a cross-site unsafe request | 30 |
 | `OriginMismatch` | `origin_mismatch` | layer 1: a foreign origin | 30 |
 | `Unverifiable` | `unverifiable` | the check cannot run: no session id, or no Fetch Metadata in `PolicyOnly` | 5 |
-| `AlreadyUsed` | `already_used` | a one-time token presented again (or the store cannot vouch it was not, as after a restart) | 20 |
+| `AlreadyUsed` | `already_used` | a one-time token presented again | 20 |
+| `Forgotten` | `forgotten` | the one-time store cannot vouch for this token: it restarted, or dropped records, after the token was issued (a deploy, say) | 1 |
 | `StoreUnavailable` | `store_unavailable` | the one-time store could not answer | 5 |
 | `TooManyUses` | `too_many_uses` | a session over its one-time store quota: typical of a script | 10 |
 
@@ -568,7 +572,7 @@ For detection layers: a forger controls the bytes before the MAC, so a forgery c
 ```rust
 # use csrf_sec::{Csrf, Reason};
 # fn main() -> Result<(), Box<dyn std::error::Error>> {
-# let csrf = Csrf::new(*b"an example key, 32 bytes long!!!")?;
+# let csrf = Csrf::new(*b"an example key, 32 bytes long!!!", "https://example.com")?;
 # let token = csrf.issue("session-1")?;
 match csrf.verify("session-2", &token) {
     Ok(_) => unreachable!(),
@@ -594,7 +598,8 @@ pub enum Error {
     TooManyKeys,             // more than MAX_KEYS
     InvalidLifetime,         // under 1 second, over u32::MAX seconds, or a one-time lifetime over the lifetime (unless no_expiry)
     InvalidSkew,             // longer than the lifetime
-    InvalidOrigin,           // allow_origin value is not a serialized origin, or is "null"
+    InvalidOrigin,           // own or allowed origin is empty, not a serialized origin, or "null"
+    MissingOrigin,           // Strict or PolicyOnly without own_origin
     InvalidRetireTime,       // a retire time past 2156 plus the longest token lifetime and skew (milliseconds where seconds were meant)
     EmptySession,            // issue with an empty session id
     Clock,                   // clock outside 2020-01-01 .. 2156-02-07
@@ -607,8 +612,8 @@ pub enum Error {
 
 ```rust
 # use csrf_sec::{Csrf, Error, KeyId};
-assert_eq!(Csrf::new([0u8; 32]).unwrap_err(), Error::WeakKey(KeyId(0)));
-assert_eq!(Csrf::builder().build().unwrap_err(), Error::NoSigningKey);
+assert_eq!(Csrf::new([0u8; 32], "https://example.com").unwrap_err(), Error::WeakKey(KeyId(0)));
+assert_eq!(Csrf::builder().own_origin("https://example.com").build().unwrap_err(), Error::NoSigningKey);
 ```
 
 ## Writing an adapter
@@ -623,20 +628,20 @@ An adapter is the few lines that connect csrf-sec to your HTTP stack. `examples/
 | `Sec-Fetch-Site` | request header | raw value; absent means `""` |
 | `Origin` | request header | raw value; absent means `""` |
 | `Referer` | request header | raw value; only its origin is used |
-| own origin | your configuration | `https://example.com`; prefer configuration to rebuilding it from `Host`, which a proxy may rewrite. Never take it from `X-Forwarded-Host` or `Forwarded` unless every path to the app goes through a proxy that strips or overwrites the client's copy |
+| own origin | your configuration, once: `Csrf::new(key, own_origin)` | `https://example.com`; prefer configuration to rebuilding it from `Host`, which a proxy may rewrite. Never take it from `X-Forwarded-Host` or `Forwarded` unless every path to the app goes through a proxy that strips or overwrites the client's copy |
 | session id | your session layer | the guest session before login, the user session after |
 | token | the `FIELD_NAME` form field, or the `HEADER_NAME` header for `fetch` | absent means `""` (refused as `missing`) |
 
 ```rust
 # use csrf_sec::{Csrf, RequestFacts};
 # fn main() -> Result<(), Box<dyn std::error::Error>> {
-# let csrf = Csrf::new(*b"an example key, 32 bytes long!!!")?;
+# let csrf = Csrf::new(*b"an example key, 32 bytes long!!!", "https://example.com")?;
 # let header = |name: &str| match name { "sec-fetch-site" => Some("same-origin"), "origin" => Some("https://example.com"), _ => None };
 # let (method, session_id) = ("POST", "session-1");
 # let token = csrf.issue(session_id)?;
 # let form_field = token.as_str();
 // `header` looks a request header up by its lowercase name, case-insensitively.
-let facts = RequestFacts::from_headers(method, "https://example.com", header);
+let facts = RequestFacts::from_headers(method, header);
 
 match csrf.check(&facts, session_id, form_field) {
     Ok(_) => { /* run the handler */ }
@@ -658,7 +663,7 @@ match csrf.check(&facts, session_id, form_field) {
 - When two layers check the same request (a framework's CSRF step and a gate's own login check, say), they must use the same binding, scope included. A token issued with a scope and checked without one fails as `bad_mac`, which reads as a forgery. Either issue the token with the binding the outer layer uses, or leave the route out of the outer check and let the inner one own it.
 - Issue a new token after login (the session id changes), and pass the old session id as `previous_session` for the short window your session layer keeps it.
 - Pages that carry a token must never be stored in a shared cache: send `Cache-Control: private, no-store` (or at least `private`). A cached page served to someone else hands them a token for the first user's session.
-- Never put a token in a URL. Query strings end up in logs, browser history, and `Referer` headers.
+- Never put a session token in a URL. Query strings end up in logs, browser history, and `Referer` headers. The one exception is a one-time token in a link (an email confirmation): send `Referrer-Policy: no-referrer` on the page it lands on, and keep `once_lifetime` short, since a link opened without the bound session fails the MAC, is not consumed, and stays valid for that lifetime wherever it was logged.
 - If a response differs by `Sec-Fetch-Site` or `Origin` (a refusal, say, where the same URL otherwise succeeds), send `Vary: Sec-Fetch-Site, Origin` so no cache serves one variant for the other.
 - Trust forwarded headers (`X-Forwarded-Host`, `X-Forwarded-Proto`, `Forwarded`) only from a proxy that strips the client's copies, on every ingress path, including direct access to the app server. Better: configure the own origin.
 - Leave `allow_same_site` off unless you control every subdomain of the registrable domain; a subdomain taken over by an attacker is then same-site. List the sibling origins you mean with `allow_origin` instead.
@@ -679,7 +684,7 @@ An API or site without sessions can still bind tokens to the browser: set a rand
 ```rust
 # use csrf_sec::{Csrf, OsRandom, RandomSource};
 # fn main() -> Result<(), Box<dyn std::error::Error>> {
-# let csrf = Csrf::new(*b"an example key, 32 bytes long!!!")?;
+# let csrf = Csrf::new(*b"an example key, 32 bytes long!!!", "https://example.com")?;
 let mut seed = [0u8; 32];
 OsRandom.fill(&mut seed)?;                                  // any CSPRNG works
 let cookie_value: String = seed.iter().map(|b| format!("{b:02x}")).collect();
@@ -699,11 +704,11 @@ Build a second `Csrf` with the candidate settings (`Strict` instead of `TokenOnl
 use csrf_sec::{Binding, Csrf, KeyId, Mode, RequestFacts};
 # fn main() -> Result<(), Box<dyn std::error::Error>> {
 # let key = *b"an example key, 32 bytes long!!!";
-let enforcing = Csrf::builder().key(KeyId(0), key).mode(Mode::TokenOnly).build()?;
-let candidate = Csrf::builder().key(KeyId(0), key).mode(Mode::Strict).build()?;
+let enforcing = Csrf::builder().own_origin("https://example.com").key(KeyId(0), key).mode(Mode::TokenOnly).build()?;
+let candidate = Csrf::builder().own_origin("https://example.com").key(KeyId(0), key).mode(Mode::Strict).build()?;
 
 # let token = enforcing.issue("session-1")?;
-let facts = RequestFacts::new("POST").origin("https://evil.example").own_origin("https://example.com");
+let facts = RequestFacts::new("POST").origin("https://evil.example");
 let binding = Binding::new("session-1");
 let verdict = enforcing.check_with(&facts, &binding, &token);
 let would_be = candidate.check_with(&facts, &binding, &token);
@@ -722,7 +727,7 @@ Bind to the session id plus a generation counter your session layer bumps on a p
 ```rust
 # use csrf_sec::Csrf;
 # fn main() -> Result<(), Box<dyn std::error::Error>> {
-# let csrf = Csrf::new(*b"an example key, 32 bytes long!!!")?;
+# let csrf = Csrf::new(*b"an example key, 32 bytes long!!!", "https://example.com")?;
 # let (session_id, generation) = ("session-1", 7u64);
 let bound = format!("{session_id}:{generation}");
 let token = csrf.issue(&bound)?;

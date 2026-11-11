@@ -10,6 +10,7 @@ use csrf_sec::{Binding, Csrf, KeyId, Mode, Reason};
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let csrf = Arc::new(
         Csrf::builder()
+            .own_origin("https://example.com")
             .key(KeyId(1), *b"first key, thirty-two bytes long")
             .lifetime(Duration::from_secs(8 * 3600))
             .skew(Duration::from_secs(30))

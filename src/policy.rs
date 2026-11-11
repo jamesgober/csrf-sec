@@ -10,9 +10,17 @@
 //! Sec-Fetch-Site: same-origin | none            -> pass
 //! Sec-Fetch-Site: same-site                     -> pass if allow_same_site or Origin allowlisted; else CrossSite
 //! Sec-Fetch-Site: cross-site                    -> pass if Origin allowlisted; else CrossSite
-//! no Fetch Metadata, Origin present             -> allowed: pass; "null" or other: OriginMismatch
-//! no Fetch Metadata, no Origin, Referer present -> origin allowed: pass; else OriginMismatch
+//! no Fetch Metadata, Origin present             -> own origin or allowlisted: pass; else OriginMismatch
+//! no Fetch Metadata, no Origin, Referer present -> its origin own or allowlisted: pass; else OriginMismatch
 //! nothing at all                                -> no facts: the token decides
+//! ```
+//!
+//! The own origin is configuration ([`Builder::own_origin`](crate::Builder::own_origin)),
+//! required in `Strict` and `PolicyOnly`, so there is always something to
+//! compare with: a well-formed foreign origin is never left to the token.
+//! Values are trimmed of surrounding spaces and tabs.
+//!
+//! ```text
 //! ```
 
 use alloc::{boxed::Box, vec::Vec};
@@ -107,21 +115,21 @@ fn trim(mut v: &[u8]) -> &[u8] {
 ///
 /// [`from_headers`](Self::from_headers) builds them in one call from a header
 /// lookup. Without one, start from [`new`](Self::new) and fill in what the
-/// request carried. Values are raw header bytes; an empty value counts as
-/// absent.
+/// request carried. Values are raw header bytes, trimmed of surrounding
+/// spaces and tabs; an empty value counts as absent. The site's own origin is
+/// configured on the [`Csrf`](crate::Csrf), not here.
 ///
 /// ```
 /// use std::collections::HashMap;
 /// use csrf_sec::RequestFacts;
 ///
 /// let headers = HashMap::from([("sec-fetch-site", "same-origin"), ("origin", "https://example.com")]);
-/// let facts = RequestFacts::from_headers("POST", "https://example.com", |name| headers.get(name));
+/// let facts = RequestFacts::from_headers("POST", |name| headers.get(name));
 ///
 /// // The same, one header at a time:
 /// let facts = RequestFacts::new("POST")
 ///     .fetch_site("same-origin")
-///     .origin("https://example.com")
-///     .own_origin("https://example.com");
+///     .origin("https://example.com");
 /// # let _ = facts;
 /// ```
 #[derive(Clone, Copy)]
@@ -147,34 +155,32 @@ impl<'a> RequestFacts<'a> {
         }
     }
 
-    /// Facts for a request in one call: its method, this site's own origin
-    /// (as in [`own_origin`](Self::own_origin)), and `header`, which returns
-    /// a request header's value by its lowercase name, or `None` when the
-    /// request did not carry it. It is asked for `sec-fetch-site`, `origin`,
-    /// and `referer`. Header names are case-insensitive in HTTP, so the
-    /// lookup should be too.
+    /// Facts for a request in one call: its method, and `header`, which
+    /// returns a request header's value by its lowercase name, or `None` when
+    /// the request did not carry it. It is asked for `sec-fetch-site`,
+    /// `origin`, and `referer`. Header names are case-insensitive in HTTP, so
+    /// the lookup should be too.
     ///
     /// ```
     /// use std::collections::HashMap;
     /// use csrf_sec::{Csrf, RequestFacts};
     ///
-    /// let csrf = Csrf::new(*b"an example key, 32 bytes long!!!")?;
+    /// let csrf = Csrf::new(*b"an example key, 32 bytes long!!!", "https://example.com")?;
     /// let token = csrf.issue("session-1")?;
     /// let headers = HashMap::from([("sec-fetch-site", "same-origin")]);
     ///
-    /// let facts = RequestFacts::from_headers("POST", "https://example.com", |name| headers.get(name));
+    /// let facts = RequestFacts::from_headers("POST", |name| headers.get(name));
     /// assert!(csrf.check(&facts, "session-1", &token).is_ok());
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
     #[must_use]
-    pub fn from_headers<M, O, V, F>(method: &M, own_origin: &'a O, mut header: F) -> Self
+    pub fn from_headers<M, V, F>(method: &M, mut header: F) -> Self
     where
         M: AsRef<[u8]> + ?Sized,
-        O: AsRef<[u8]> + ?Sized,
         V: AsRef<[u8]> + ?Sized + 'a,
         F: FnMut(&str) -> Option<&'a V>,
     {
-        let mut facts = Self::new(method).own_origin(own_origin);
+        let mut facts = Self::new(method);
         if let Some(v) = header("sec-fetch-site") {
             facts = facts.fetch_site(v);
         }
@@ -197,23 +203,25 @@ impl<'a> RequestFacts<'a> {
     /// The `Origin` header value.
     #[must_use]
     pub fn origin<V: AsRef<[u8]> + ?Sized>(mut self, value: &'a V) -> Self {
-        self.origin = non_empty(value.as_ref());
+        self.origin = non_empty(trim(value.as_ref()));
         self
     }
 
     /// The `Referer` header value (a full URL; only its origin is used).
     #[must_use]
     pub fn referer<V: AsRef<[u8]> + ?Sized>(mut self, value: &'a V) -> Self {
-        self.referer = non_empty(value.as_ref());
+        self.referer = non_empty(trim(value.as_ref()));
         self
     }
 
-    /// This site's own origin, such as `https://example.com`: the scheme, host,
-    /// and port the request was addressed to. Requests from it are allowed in
-    /// addition to [`Builder::allow_origin`](crate::Builder::allow_origin).
+    /// For one `Csrf` serving several sites: this request's own origin, such
+    /// as `https://shop.example`, in place of the configured
+    /// [`Builder::own_origin`](crate::Builder::own_origin). A value that is
+    /// empty or not a serialized origin matches nothing (the request fails
+    /// closed). A single site leaves this out.
     #[must_use]
     pub fn own_origin<V: AsRef<[u8]> + ?Sized>(mut self, value: &'a V) -> Self {
-        self.own_origin = non_empty(value.as_ref());
+        self.own_origin = Some(trim(value.as_ref()));
         self
     }
 
@@ -449,24 +457,46 @@ impl Allowed {
     }
 }
 
-/// The configured policy: allowed origins and the sibling-subdomain rule.
+impl Allowed {
+    /// The normalized origin, or `None` when `origin` is not a serialized
+    /// origin (or is `null`, or empty).
+    fn parse(origin: &str) -> Option<Self> {
+        let o = parse_origin(trim(origin.as_bytes()))?;
+        Some(Self {
+            scheme: o.scheme.to_ascii_lowercase().into_boxed_slice(),
+            host: o.host.to_ascii_lowercase().into_boxed_slice(),
+            port: o.port,
+        })
+    }
+}
+
+/// The configured policy: this site's own origin, allowed origins, and the
+/// sibling-subdomain rule.
 #[derive(Clone, Default)]
 pub(crate) struct Policy {
+    own: Option<Allowed>,
     allowed: Vec<Allowed>,
     allow_same_site: bool,
 }
 
 impl Policy {
+    /// Set this site's own origin. Returns `false` when `origin` is not a
+    /// serialized origin (or is `null`, or empty).
+    pub(crate) fn set_own(&mut self, origin: &str) -> bool {
+        self.own = Allowed::parse(origin);
+        self.own.is_some()
+    }
+
+    /// Whether an own origin is configured.
+    pub(crate) fn has_own(&self) -> bool {
+        self.own.is_some()
+    }
+
     /// Add an allowed origin. Returns `false` when `origin` is not a
     /// serialized origin (or is `null`).
     pub(crate) fn allow(&mut self, origin: &str) -> bool {
-        let Some(o) = parse_origin(origin.as_bytes()) else {
+        let Some(allowed) = Allowed::parse(origin) else {
             return false;
-        };
-        let allowed = Allowed {
-            scheme: o.scheme.to_ascii_lowercase().into_boxed_slice(),
-            host: o.host.to_ascii_lowercase().into_boxed_slice(),
-            port: o.port,
         };
         if !self
             .allowed
@@ -482,31 +512,27 @@ impl Policy {
         self.allow_same_site = allow;
     }
 
-    /// Whether `origin` (raw bytes and their parse) matches this site or an
-    /// allowed origin. `None` when there is nothing to compare against (no own
-    /// origin given, no allowlist). An own origin that is given but malformed
-    /// counts as configured and matches nothing (fail closed).
+    /// Whether `origin` (raw bytes and their parse) is this site's own
+    /// origin or an allowed one. The own origin is the request's
+    /// (`per_request`) when given, else the configured one. With nothing to
+    /// compare against, or an own origin that is given but malformed, nothing
+    /// matches: it fails closed.
     fn allows(
         &self,
         raw: &[u8],
         origin: Option<OriginRef<'_>>,
-        own: Option<&[u8]>,
-    ) -> Option<bool> {
-        // Fast path: byte-identical to this site's own origin, and well formed.
-        if origin.is_some() && own == Some(raw) {
-            return Some(true);
-        }
-        if own.is_none() && self.allowed.is_empty() {
-            return None;
-        }
-        let own = own.and_then(parse_origin);
+        per_request: Option<&[u8]>,
+    ) -> bool {
         let Some(origin) = origin else {
-            return Some(false);
+            return false;
         };
-        Some(
-            own.is_some_and(|o| o.eq(&origin))
-                || self.allowed.iter().any(|a| a.as_ref().eq(&origin)),
-        )
+        let own = match per_request {
+            // Fast path: byte-identical to the request's own origin.
+            Some(own) if own == raw => true,
+            Some(own) => parse_origin(own).is_some_and(|o| o.eq(&origin)),
+            None => self.own.as_ref().is_some_and(|o| o.as_ref().eq(&origin)),
+        };
+        own || self.allowed.iter().any(|a| a.as_ref().eq(&origin))
     }
 
     /// The layer-1 decision. `Ok(OriginCheck::NoFacts)` means the request
@@ -533,25 +559,19 @@ impl Policy {
                 }
             }
             None => {
-                if let Some((raw, parsed)) = facts.origin.map(|raw| (raw, parse_origin(raw))) {
-                    match self.allows(raw, parsed, facts.own_origin) {
-                        Some(true) => Ok(OriginCheck::Origin),
-                        Some(false) => Err(Rejected::new(Reason::OriginMismatch)),
-                        // Nothing configured to compare with; "null" and
-                        // unparseable values are still refused.
-                        None if parsed.is_none() => Err(Rejected::new(Reason::OriginMismatch)),
-                        None => Ok(OriginCheck::NoFacts),
+                if let Some(raw) = facts.origin {
+                    if self.allows(raw, parse_origin(raw), facts.own_origin) {
+                        Ok(OriginCheck::Origin)
+                    } else {
+                        Err(Rejected::new(Reason::OriginMismatch))
                     }
                 } else if let Some(referer) = facts.referer {
                     let parsed = referer_origin(referer);
                     let raw = parsed.map_or(&[][..], |o| &referer[..o.len()]);
-                    match self.allows(raw, parsed, facts.own_origin) {
-                        Some(true) => Ok(OriginCheck::Referer),
-                        Some(false) => Err(Rejected::new(Reason::OriginMismatch)),
-                        // As for Origin: malformed values are refused even
-                        // with nothing configured to compare against.
-                        None if parsed.is_none() => Err(Rejected::new(Reason::OriginMismatch)),
-                        None => Ok(OriginCheck::NoFacts),
+                    if self.allows(raw, parsed, facts.own_origin) {
+                        Ok(OriginCheck::Referer)
+                    } else {
+                        Err(Rejected::new(Reason::OriginMismatch))
                     }
                 } else {
                     Ok(OriginCheck::NoFacts)
@@ -575,16 +595,26 @@ impl Policy {
     }
 }
 
+impl fmt::Display for Allowed {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let scheme = core::str::from_utf8(&self.scheme).unwrap_or("?");
+        let host = core::str::from_utf8(&self.host).unwrap_or("?");
+        match self.port {
+            Some(p) => write!(f, "{scheme}://{host}:{p}"),
+            None => write!(f, "{scheme}://{host}"),
+        }
+    }
+}
+
 impl fmt::Debug for Policy {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.own {
+            Some(o) => write!(f, "own={o} allowed=")?,
+            None => f.write_str("own=none allowed=")?,
+        }
         let mut list = f.debug_list();
         for a in &self.allowed {
-            let scheme = core::str::from_utf8(&a.scheme).unwrap_or("?");
-            let host = core::str::from_utf8(&a.host).unwrap_or("?");
-            match a.port {
-                Some(p) => list.entry(&format_args!("{scheme}://{host}:{p}")),
-                None => list.entry(&format_args!("{scheme}://{host}")),
-            };
+            list.entry(&format_args!("{a}"));
         }
         list.finish()?;
         write!(f, " allow_same_site={}", self.allow_same_site)
@@ -961,14 +991,23 @@ mod tests {
     }
 
     #[test]
-    fn test_policy_nothing_to_compare_defers_except_null() {
+    fn test_policy_with_nothing_to_compare_fails_closed() {
+        // No own origin and no allowlist (only `TokenOnly` builds like this):
+        // an origin cannot be judged, so it is refused, never left to the
+        // token as `NoFacts`.
         let p = Policy::default();
-        let f = RequestFacts::new("POST").origin("https://example.com");
-        assert_eq!(p.decide(&f), Ok(OriginCheck::NoFacts));
-        let f = RequestFacts::new("POST").origin("null");
-        assert_eq!(p.decide(&f).unwrap_err().reason(), Reason::OriginMismatch);
-        let f = RequestFacts::new("POST").referer("https://example.com/");
-        assert_eq!(p.decide(&f), Ok(OriginCheck::NoFacts));
+        for f in [
+            RequestFacts::new("POST").origin("https://example.com"),
+            RequestFacts::new("POST").origin("null"),
+            RequestFacts::new("POST").referer("https://example.com/"),
+        ] {
+            assert_eq!(p.decide(&f).unwrap_err().reason(), Reason::OriginMismatch);
+        }
+        // A request that carried nothing is still left to the token.
+        assert_eq!(
+            p.decide(&RequestFacts::new("POST")),
+            Ok(OriginCheck::NoFacts)
+        );
     }
 
     #[test]

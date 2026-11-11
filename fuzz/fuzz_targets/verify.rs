@@ -10,7 +10,7 @@ use libfuzzer_sys::fuzz_target;
 const NOW: u64 = 1_792_540_800;
 
 fuzz_target!(|data: &[u8]| {
-    let csrf = Csrf::new(*b"fuzz target key, thirty-two byte").unwrap();
+    let csrf = Csrf::new(*b"fuzz target key, thirty-two byte", "https://example.com").unwrap();
     // Split the input into four parts by the first three bytes.
     if data.len() < 3 {
         return;

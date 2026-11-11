@@ -28,7 +28,7 @@ impl RandomSource for Pads {
 }
 
 fn csrf() -> Csrf {
-    Csrf::new(KEY).unwrap()
+    Csrf::new(KEY, "https://example.com").unwrap()
 }
 
 fn post<'a>() -> RequestFacts<'a> {
@@ -267,6 +267,7 @@ fn t8_forgery_without_the_key_fails() {
     // Tokens made with another key fail, whatever the key id claims.
     for id in [0u8, 1, 255] {
         let other = Csrf::builder()
+            .own_origin("https://example.com")
             .key(KeyId(id), *b"the attacker's own key, 32 bytes")
             .build()
             .unwrap();
@@ -334,6 +335,7 @@ fn t9_nearly_right_tags_are_refused_like_wrong_ones() {
 #[test]
 fn t10_compromised_key_is_retired() {
     let c = Csrf::builder()
+        .own_origin("https://example.com")
         .key(KeyId(1), KEY)
         .lifetime(Duration::from_secs(600))
         .skew(Duration::from_secs(30))
@@ -341,7 +343,11 @@ fn t10_compromised_key_is_retired() {
         .unwrap();
     let b = Binding::new("s");
     // The attacker stole key 1 and can mint tokens with it.
-    let stolen_ring = Csrf::builder().key(KeyId(1), KEY).build().unwrap();
+    let stolen_ring = Csrf::builder()
+        .own_origin("https://example.com")
+        .key(KeyId(1), KEY)
+        .build()
+        .unwrap();
     let rotated = c
         .rotated_at(KeyId(2), *b"a fresh key after the breach!!!!", NOW)
         .unwrap();
@@ -364,6 +370,7 @@ fn t10_compromised_key_is_retired() {
     );
     // ...which an emergency rotation can make immediate:
     let emergency = Csrf::builder()
+        .own_origin("https://example.com")
         .key(KeyId(2), *b"a fresh key after the breach!!!!")
         .build()
         .unwrap();
@@ -421,6 +428,7 @@ fn t11_oversized_and_garbage_inputs_are_cheap_to_refuse() {
 #[test]
 fn t12_clock_skew_is_bounded() {
     let c = Csrf::builder()
+        .own_origin("https://example.com")
         .key(KeyId(0), KEY)
         .lifetime(Duration::from_secs(3600))
         .skew(Duration::from_secs(60))
@@ -488,6 +496,7 @@ fn t14_null_origin_and_stripped_referer() {
     // "null" can never be allowlisted.
     assert_eq!(
         Csrf::builder()
+            .own_origin("https://example.com")
             .key(KeyId(0), KEY)
             .allow_origin("null")
             .build()
@@ -521,6 +530,7 @@ fn t15_cross_site_navigation_post_is_refused() {
         .origin("https://evil.example");
     for mode in [Mode::Strict, Mode::PolicyOnly] {
         let c = Csrf::builder()
+            .own_origin("https://example.com")
             .key(KeyId(0), KEY)
             .mode(mode)
             .build()

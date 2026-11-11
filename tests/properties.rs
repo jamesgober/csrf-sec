@@ -26,7 +26,7 @@ impl RandomSource for SeedPads {
 fn csrf(key_byte: u8) -> Csrf {
     let mut key = [key_byte; 32];
     key[0] ^= 0x5a; // never all-equal
-    Csrf::new(key).unwrap()
+    Csrf::new(key, "https://example.com").unwrap()
 }
 
 fn bytes(max: usize) -> impl Strategy<Value = Vec<u8>> {
@@ -133,7 +133,7 @@ proptest! {
     /// configured, when Fetch Metadata is absent.
     #[test]
     fn prop_null_origin_refused(own in bytes(40), referer in bytes(60), allow in any::<bool>()) {
-        let mut builder = Csrf::builder().key(KeyId(0), *b"null-origin property key, 32 b!!");
+        let mut builder = Csrf::builder().own_origin("https://example.com").key(KeyId(0), *b"null-origin property key, 32 b!!");
         if allow {
             builder = builder.allow_origin("https://partner.example");
         }
@@ -179,8 +179,8 @@ proptest! {
     #[test]
     fn prop_other_key_fails(k1 in any::<u8>(), k2 in any::<u8>(), id in any::<u8>(), seed in any::<u64>()) {
         prop_assume!(k1 != k2);
-        let issuer = Csrf::builder().key(KeyId(id), { let mut k = [k1; 32]; k[0] ^= 0x5a; k }).build().unwrap();
-        let verifier = Csrf::builder().key(KeyId(id), { let mut k = [k2; 32]; k[0] ^= 0x5a; k }).build().unwrap();
+        let issuer = Csrf::builder().own_origin("https://example.com").key(KeyId(id), { let mut k = [k1; 32]; k[0] ^= 0x5a; k }).build().unwrap();
+        let verifier = Csrf::builder().own_origin("https://example.com").key(KeyId(id), { let mut k = [k2; 32]; k[0] ^= 0x5a; k }).build().unwrap();
         let b = Binding::new("s");
         let t = issuer.issue_at(&b, NOW, &mut SeedPads(seed)).unwrap();
         prop_assert_eq!(verifier.verify_at(&b, t.as_bytes(), NOW).unwrap_err().reason(), Reason::BadMac);
@@ -259,6 +259,7 @@ proptest! {
     #[test]
     fn prop_no_expiry_window(later in 0u64..3_000_000_000, issued in 0u64..1_000_000_000, seed in any::<u64>()) {
         let c = Csrf::builder()
+            .own_origin("https://example.com")
             .key(KeyId(0), *b"window property key, 32 bytes!!!")
             .no_expiry()
             .build()
@@ -279,6 +280,7 @@ proptest! {
     fn prop_window_is_exact(lifetime in 1u64..1_000_000, skew_frac in 0u64..=100, issued in 0u64..1_000_000_000) {
         let skew = lifetime * skew_frac / 100;
         let c = Csrf::builder()
+            .own_origin("https://example.com")
             .key(KeyId(0), *b"window property key, 32 bytes!!!")
             .lifetime(std::time::Duration::from_secs(lifetime))
             .skew(std::time::Duration::from_secs(skew))

@@ -9,7 +9,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // derived from a key-vault master). A key generated at boot would make
     // every open form fail after a restart.
     let key = *b"example key: load yours securely";
-    let csrf = Csrf::new(key)?;
+    let csrf = Csrf::new(key, "https://example.com")?;
 
     // The session id your session layer assigned (the guest session before
     // login, the user session after).

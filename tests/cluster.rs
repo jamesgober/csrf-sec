@@ -72,7 +72,7 @@ impl NonceStore for SharedStore {
 
 /// One node's configuration, built the way every node in the cluster builds it.
 fn node(keys: impl FnOnce(csrf_sec::Builder) -> csrf_sec::Builder) -> Csrf {
-    keys(Csrf::builder())
+    keys(Csrf::builder().own_origin("https://example.com"))
         .lifetime(Duration::from_secs(LIFETIME))
         .once_lifetime(Duration::from_secs(ONCE))
         .skew(Duration::from_secs(SKEW))

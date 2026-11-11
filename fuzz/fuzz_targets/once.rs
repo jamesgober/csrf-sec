@@ -24,7 +24,7 @@ impl RandomSource for Pads {
 }
 
 fuzz_target!(|data: &[u8]| {
-    let csrf = Csrf::new(*b"fuzz target key, thirty-two byte").unwrap();
+    let csrf = Csrf::new(*b"fuzz target key, thirty-two byte", "https://example.com").unwrap();
     let store = MemoryStore::starting_at(64, NOW - 60); // small: exercise the full-shard path
     let binding = Binding::new("fuzz-session").once(&store);
     let mut pads = Pads(data.len() as u64);

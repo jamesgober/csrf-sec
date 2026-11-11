@@ -42,15 +42,13 @@ pub const DEFAULT_ONCE_LIFETIME: Duration = Duration::from_secs(3600);
 /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// use csrf_sec::{Csrf, RequestFacts};
 ///
-/// let csrf = Csrf::new(*b"an example key, 32 bytes long!!!")?;
+/// let csrf = Csrf::new(*b"an example key, 32 bytes long!!!", "https://example.com")?;
 ///
 /// // Rendering a form:
 /// let token = csrf.issue("session-1")?;
 ///
 /// // Handling the POST:
-/// let facts = RequestFacts::new("POST")
-///     .fetch_site("same-origin")
-///     .own_origin("https://example.com");
+/// let facts = RequestFacts::new("POST").fetch_site("same-origin");
 /// csrf.check(&facts, "session-1", &token)?;
 ///
 /// // A token never verifies for another session:
@@ -68,17 +66,23 @@ pub struct Csrf {
 }
 
 impl Csrf {
-    /// A `Csrf` with one signing key (id 0) and the defaults: 12-hour
-    /// lifetime, 60-second skew, [`Mode::Strict`], no extra allowed origins.
+    /// A `Csrf` for the site at `own_origin` (such as `https://example.com`)
+    /// with one signing key (id 0) and the defaults: 12-hour lifetime,
+    /// 60-second skew, [`Mode::Strict`], no extra allowed origins.
     ///
     /// The key must be persisted (or derived from a persisted master): a key
     /// generated at boot makes every open form fail after a restart.
     ///
     /// # Errors
     ///
-    /// [`Error::WeakKey`] if all 32 bytes are equal.
-    pub fn new(key: [u8; KEY_LEN]) -> Result<Self, Error> {
-        Self::builder().key(KeyId(0), key).build()
+    /// [`Error::WeakKey`] if all 32 bytes are equal; [`Error::InvalidOrigin`]
+    /// if `own_origin` is empty or not a serialized origin (no path, no
+    /// trailing slash).
+    pub fn new(key: [u8; KEY_LEN], own_origin: &str) -> Result<Self, Error> {
+        Self::builder()
+            .key(KeyId(0), key)
+            .own_origin(own_origin)
+            .build()
     }
 
     /// A new random key for [`Csrf::new`], from the operating system's
@@ -94,7 +98,7 @@ impl Csrf {
     /// use csrf_sec::Csrf;
     ///
     /// let key = Csrf::generate_key()?; // once, then store it
-    /// let csrf = Csrf::new(key)?;      // at every start, with the stored key
+    /// let csrf = Csrf::new(key, "https://example.com")?;      // at every start, with the stored key
     /// # let _ = csrf;
     /// # Ok::<(), csrf_sec::Error>(())
     /// ```
@@ -232,6 +236,7 @@ impl Csrf {
         match store.consume(&use_) {
             Ok(true) => Ok(opened.verified()),
             Ok(false) => Err(Rejected::new(Reason::AlreadyUsed)),
+            Err(StoreError::Forgotten) => Err(Rejected::new(Reason::Forgotten)),
             Err(StoreError::SessionLimit) => Err(Rejected::new(Reason::TooManyUses)),
             Err(_) => Err(Rejected::new(Reason::StoreUnavailable)),
         }
@@ -452,12 +457,13 @@ struct PendingKey {
 ///
 /// # let (current_key, old_key, retire_at) = (*b"current key, 32 bytes long!!!!!!", *b"previous key, 32 bytes long!!!!!", 1_900_000_000);
 /// let csrf = Csrf::builder()
+///     .own_origin("https://example.com")
 ///     .key(KeyId(3), current_key)
 ///     .retired(KeyId(2), old_key, retire_at)
 ///     .lifetime(Duration::from_secs(12 * 3600))
 ///     .skew(Duration::from_secs(60))
 ///     .mode(Mode::Strict)
-///     .allow_origin("https://example.com")
+///     .allow_origin("https://partner.example")
 ///     .allow_same_site(false)
 ///     .build()?;
 /// assert_eq!(csrf.signing_key(), KeyId(3));
@@ -599,11 +605,27 @@ impl Builder {
         self
     }
 
+    /// This site's own origin, such as `https://example.com`: the scheme,
+    /// host, and port browsers address it by (no path, no trailing slash).
+    /// Required in [`Mode::Strict`] and [`Mode::PolicyOnly`]; [`build`](Self::build)
+    /// refuses it when it is empty or not a serialized origin. A request
+    /// without Fetch Metadata passes layer 1 only when its `Origin` (or
+    /// `Referer`) is this origin or an allowed one.
+    ///
+    /// One `Csrf` serving several sites sets the request's own origin with
+    /// [`RequestFacts::own_origin`](crate::RequestFacts::own_origin), or
+    /// builds one `Csrf` per site.
+    #[must_use]
+    pub fn own_origin(mut self, origin: &str) -> Self {
+        if !self.policy.set_own(origin) {
+            self.invalid_origin = true;
+        }
+        self
+    }
+
     /// Also allow requests from `origin`, a serialized origin such as
-    /// `https://partner.example` (scheme, host, optional port; no path). The
-    /// site's own origin comes from
-    /// [`RequestFacts::own_origin`](crate::RequestFacts::own_origin); add it
-    /// here too if the adapter cannot supply it.
+    /// `https://partner.example` (scheme, host, optional port; no path), as
+    /// well as the own origin.
     #[must_use]
     pub fn allow_origin(mut self, origin: &str) -> Self {
         if !self.policy.allow(origin) {
@@ -633,10 +655,14 @@ impl Builder {
     /// [`Error::NoSigningKey`], [`Error::MultipleSigningKeys`],
     /// [`Error::DuplicateKeyId`], [`Error::TooManyKeys`], [`Error::WeakKey`],
     /// [`Error::InvalidLifetime`], [`Error::InvalidSkew`],
-    /// [`Error::InvalidOrigin`], [`Error::InvalidRetireTime`].
+    /// [`Error::InvalidOrigin`], [`Error::MissingOrigin`],
+    /// [`Error::InvalidRetireTime`].
     pub fn build(self) -> Result<Csrf, Error> {
         if self.invalid_origin {
             return Err(Error::InvalidOrigin);
+        }
+        if self.mode != Mode::TokenOnly && !self.policy.has_own() {
+            return Err(Error::MissingOrigin);
         }
         let lifetime =
             u32::try_from(self.lifetime.as_secs()).map_err(|_| Error::InvalidLifetime)?;
@@ -750,6 +776,7 @@ mod tests {
     #[test]
     fn test_keys_lists_ring_signing_first() {
         let c = Csrf::builder()
+            .own_origin("https://example.com")
             .accept(KeyId(5), K2)
             .key(KeyId(4), K1)
             .retired(KeyId(3), K3, NOW)
@@ -786,6 +813,7 @@ mod tests {
         let latest = |lifetime: u64, skew: u64| EPOCH + u64::from(u32::MAX) + lifetime + skew + 1;
         let build = |retire_at: u64, lifetime: u64, skew: u64| {
             Csrf::builder()
+                .own_origin("https://example.com")
                 .key(KeyId(1), K1)
                 .retired(KeyId(2), K2, retire_at)
                 .lifetime(Duration::from_secs(lifetime))
@@ -808,7 +836,9 @@ mod tests {
             k[0] = i;
             k
         };
-        let mut b = Csrf::builder().key(KeyId(0), key(0));
+        let mut b = Csrf::builder()
+            .own_origin("https://example.com")
+            .key(KeyId(0), key(0));
         let reserved = b.keys.capacity();
         assert!(reserved >= crate::MAX_KEYS);
         for i in 1..crate::MAX_KEYS as u8 {
@@ -822,7 +852,9 @@ mod tests {
         assert!(b.too_many_keys);
         assert_eq!(b.build().unwrap_err(), Error::TooManyKeys);
         // Exactly MAX_KEYS keys build.
-        let mut b = Csrf::builder().key(KeyId(0), key(0));
+        let mut b = Csrf::builder()
+            .own_origin("https://example.com")
+            .key(KeyId(0), key(0));
         for i in 1..crate::MAX_KEYS as u8 {
             b = b.accept(KeyId(i), key(i));
         }
@@ -832,6 +864,7 @@ mod tests {
     #[test]
     fn test_builder_settings_are_kept() {
         let c = Csrf::builder()
+            .own_origin("https://example.com")
             .key(KeyId(2), K1)
             .mode(Mode::TokenOnly)
             .lifetime(Duration::from_secs(900))
@@ -845,7 +878,11 @@ mod tests {
         assert_eq!(c.signing_key(), KeyId(2));
         let sibling = RequestFacts::new("POST").fetch_site("same-site");
         assert_eq!(c.policy(&sibling), Ok(OriginCheck::FetchMetadata));
-        let strict = Csrf::builder().key(KeyId(2), K1).build().unwrap();
+        let strict = Csrf::builder()
+            .own_origin("https://example.com")
+            .key(KeyId(2), K1)
+            .build()
+            .unwrap();
         assert_eq!(
             strict.policy(&sibling).unwrap_err().reason(),
             Reason::CrossSite
@@ -856,6 +893,7 @@ mod tests {
     #[test]
     fn test_accepts_uses_the_system_clock() {
         let c = Csrf::builder()
+            .own_origin("https://example.com")
             .key(KeyId(1), K1)
             .retired(KeyId(2), K2, crate::token::EPOCH + u64::from(u32::MAX))
             .retired(KeyId(3), K3, 1)
@@ -869,7 +907,7 @@ mod tests {
 
     #[test]
     fn test_new_defaults() {
-        let c = Csrf::new(K1).unwrap();
+        let c = Csrf::new(K1, "https://example.com").unwrap();
         assert_eq!(c.signing_key(), KeyId(0));
         assert_eq!(c.lifetime(), DEFAULT_LIFETIME);
         assert_eq!(c.skew(), DEFAULT_SKEW);
@@ -878,14 +916,24 @@ mod tests {
 
     #[test]
     fn test_new_weak_key_rejects() {
-        assert_eq!(Csrf::new([9; 32]).unwrap_err(), Error::WeakKey(KeyId(0)));
+        assert_eq!(
+            Csrf::new([9; 32], "https://example.com").unwrap_err(),
+            Error::WeakKey(KeyId(0))
+        );
     }
 
     #[test]
     fn test_builder_errors() {
-        assert_eq!(Csrf::builder().build().unwrap_err(), Error::NoSigningKey);
         assert_eq!(
             Csrf::builder()
+                .own_origin("https://example.com")
+                .build()
+                .unwrap_err(),
+            Error::NoSigningKey
+        );
+        assert_eq!(
+            Csrf::builder()
+                .own_origin("https://example.com")
                 .key(KeyId(1), K1)
                 .key(KeyId(2), K2)
                 .build()
@@ -894,6 +942,7 @@ mod tests {
         );
         assert_eq!(
             Csrf::builder()
+                .own_origin("https://example.com")
                 .key(KeyId(1), K1)
                 .accept(KeyId(1), K2)
                 .build()
@@ -902,6 +951,7 @@ mod tests {
         );
         assert_eq!(
             Csrf::builder()
+                .own_origin("https://example.com")
                 .key(KeyId(1), K1)
                 .lifetime(Duration::ZERO)
                 .build()
@@ -910,6 +960,7 @@ mod tests {
         );
         assert_eq!(
             Csrf::builder()
+                .own_origin("https://example.com")
                 .key(KeyId(1), K1)
                 .lifetime(Duration::from_millis(999))
                 .build()
@@ -918,6 +969,7 @@ mod tests {
         );
         assert_eq!(
             Csrf::builder()
+                .own_origin("https://example.com")
                 .key(KeyId(1), K1)
                 .lifetime(Duration::from_secs(u64::from(u32::MAX) + 1))
                 .build()
@@ -926,6 +978,7 @@ mod tests {
         );
         assert_eq!(
             Csrf::builder()
+                .own_origin("https://example.com")
                 .key(KeyId(1), K1)
                 .lifetime(Duration::from_secs(10))
                 .skew(Duration::from_secs(11))
@@ -935,6 +988,7 @@ mod tests {
         );
         assert_eq!(
             Csrf::builder()
+                .own_origin("https://example.com")
                 .key(KeyId(1), K1)
                 .allow_origin("null")
                 .build()
@@ -942,7 +996,11 @@ mod tests {
             Error::InvalidOrigin
         );
         assert_eq!(
-            Csrf::builder().key(KeyId(1), [0; 32]).build().unwrap_err(),
+            Csrf::builder()
+                .own_origin("https://example.com")
+                .key(KeyId(1), [0; 32])
+                .build()
+                .unwrap_err(),
             Error::WeakKey(KeyId(1))
         );
     }
@@ -950,6 +1008,7 @@ mod tests {
     #[test]
     fn test_builder_lifetime_max_and_skew_equal_lifetime_ok() {
         let c = Csrf::builder()
+            .own_origin("https://example.com")
             .key(KeyId(1), K1)
             .lifetime(Duration::from_secs(u64::from(u32::MAX)))
             .skew(Duration::from_secs(u64::from(u32::MAX)))
@@ -960,7 +1019,7 @@ mod tests {
 
     #[test]
     fn test_issue_at_verify_at_round_trip() {
-        let c = Csrf::new(K1).unwrap();
+        let c = Csrf::new(K1, "https://example.com").unwrap();
         let b = Binding::new("sess");
         let t = issue(&c, &b, NOW);
         let v = c.verify_at(&b, t.as_bytes(), NOW).unwrap();
@@ -970,7 +1029,7 @@ mod tests {
 
     #[test]
     fn test_issue_at_empty_session_and_bad_clock_refuse() {
-        let c = Csrf::new(K1).unwrap();
+        let c = Csrf::new(K1, "https://example.com").unwrap();
         assert_eq!(
             c.issue_at(&Binding::new(""), NOW, &mut Counter(0))
                 .unwrap_err(),
@@ -991,7 +1050,7 @@ mod tests {
                 Err(Error::Random)
             }
         }
-        let c = Csrf::new(K1).unwrap();
+        let c = Csrf::new(K1, "https://example.com").unwrap();
         assert_eq!(
             c.issue_at(&Binding::new("s"), NOW, &mut Broken)
                 .unwrap_err(),
@@ -1002,6 +1061,7 @@ mod tests {
     #[test]
     fn test_verify_at_expiry_and_skew_boundaries() {
         let c = Csrf::builder()
+            .own_origin("https://example.com")
             .key(KeyId(1), K1)
             .lifetime(Duration::from_secs(100))
             .skew(Duration::from_secs(5))
@@ -1026,6 +1086,7 @@ mod tests {
     #[test]
     fn test_rotation_keeps_old_tokens_until_retirement() {
         let c = Csrf::builder()
+            .own_origin("https://example.com")
             .key(KeyId(1), K1)
             .lifetime(Duration::from_secs(100))
             .skew(Duration::from_secs(10))
@@ -1061,12 +1122,14 @@ mod tests {
     fn test_cluster_two_step_rotation() {
         // Step 1: every node accepts key 2; node A still signs with key 1.
         let staged = Csrf::builder()
+            .own_origin("https://example.com")
             .key(KeyId(1), K1)
             .accept(KeyId(2), K2)
             .build()
             .unwrap();
         // Step 2: node B already signs with key 2.
         let promoted = Csrf::builder()
+            .own_origin("https://example.com")
             .key(KeyId(2), K2)
             .retired(KeyId(1), K1, NOW + 1_000_000)
             .build()
@@ -1093,7 +1156,7 @@ mod tests {
 
     #[test]
     fn test_check_at_modes() {
-        let strict = Csrf::new(K1).unwrap();
+        let strict = Csrf::new(K1, "https://example.com").unwrap();
         let b = Binding::new("s");
         let t = issue(&strict, &b, NOW);
         let same = RequestFacts::new("POST").fetch_site("same-origin");
@@ -1120,6 +1183,7 @@ mod tests {
         );
 
         let token_only = Csrf::builder()
+            .own_origin("https://example.com")
             .key(KeyId(0), K1)
             .mode(Mode::TokenOnly)
             .build()
@@ -1136,6 +1200,7 @@ mod tests {
         assert!(token_only.check_at(&get, &b, b"", NOW).is_ok());
 
         let policy_only = Csrf::builder()
+            .own_origin("https://example.com")
             .key(KeyId(0), K1)
             .mode(Mode::PolicyOnly)
             .build()
@@ -1161,6 +1226,7 @@ mod tests {
     #[test]
     fn test_debug_never_shows_key_material() {
         let c = Csrf::builder()
+            .own_origin("https://example.com")
             .key(KeyId(1), K1)
             .allow_origin("https://a.example")
             .build()
@@ -1169,7 +1235,9 @@ mod tests {
         assert!(!text.contains("key one"));
         assert!(text.contains("KeyId(1)"));
         assert!(text.contains("https://a.example"));
-        let builder = Csrf::builder().key(KeyId(1), K1);
+        let builder = Csrf::builder()
+            .own_origin("https://example.com")
+            .key(KeyId(1), K1);
         let text = format!("{builder:?}");
         assert!(!text.contains("key one"));
         assert!(

@@ -20,8 +20,10 @@ pub const NONCE_LEN: usize = 16;
 
 /// Why a [`NonceStore`] could not answer.
 ///
-/// On verify, [`SessionLimit`](Self::SessionLimit) becomes
-/// [`Reason::TooManyUses`](crate::Reason::TooManyUses) and anything else
+/// On verify, [`Forgotten`](Self::Forgotten) becomes
+/// [`Reason::Forgotten`](crate::Reason::Forgotten),
+/// [`SessionLimit`](Self::SessionLimit) becomes
+/// [`Reason::TooManyUses`](crate::Reason::TooManyUses), and anything else
 /// [`Reason::StoreUnavailable`](crate::Reason::StoreUnavailable): either way
 /// the request is refused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -34,6 +36,9 @@ pub enum StoreError {
     /// This session already holds as many records as the store allows one
     /// session.
     SessionLimit,
+    /// The store cannot tell whether the nonce was used: the token was issued
+    /// before the store's memory began, or before records it dropped.
+    Forgotten,
 }
 
 impl fmt::Display for StoreError {
@@ -42,6 +47,7 @@ impl fmt::Display for StoreError {
             Self::Unavailable => "the one-time token store is unavailable",
             Self::Full => "the one-time token store is full of unexpired records",
             Self::SessionLimit => "this session has used its share of the one-time token store",
+            Self::Forgotten => "the one-time token store cannot tell whether this token was used",
         })
     }
 }
@@ -113,10 +119,12 @@ impl fmt::Debug for NonceUse<'_> {
 /// `consume` **atomically** records `use_.nonce` as used and returns:
 ///
 /// - `Ok(true)` when this is the first use: the request passes;
-/// - `Ok(false)` when the nonce was already recorded, or when the store cannot
-///   vouch that it was not (for example the token was issued before the store's
-///   memory began): the request is refused as
-///   [`AlreadyUsed`](crate::Reason::AlreadyUsed);
+/// - `Ok(false)` when the nonce was already recorded: the request is refused
+///   as [`AlreadyUsed`](crate::Reason::AlreadyUsed);
+/// - `Err(StoreError::Forgotten)` when the store cannot vouch that it was not
+///   (the token was issued before the store's memory began, or before records
+///   it dropped): refused as [`Forgotten`](crate::Reason::Forgotten), which is
+///   benign;
 /// - `Err(_)` when the store cannot answer: the request is refused as
 ///   [`StoreUnavailable`](crate::Reason::StoreUnavailable), or as
 ///   [`TooManyUses`](crate::Reason::TooManyUses) for
@@ -288,7 +296,7 @@ mod memory {
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// use csrf_sec::{Binding, Csrf, MemoryStore, OsRandom, Reason};
     ///
-    /// let csrf = Csrf::new(*b"an example key, 32 bytes long!!!")?;
+    /// let csrf = Csrf::new(*b"an example key, 32 bytes long!!!", "https://example.com")?;
     /// let started = 1_800_000_000; // MemoryStore::new reads the system clock
     /// let store = MemoryStore::starting_at(100_000, started);
     /// let pay = Binding::new("session-1").scope("POST /pay").once(&store);
@@ -312,6 +320,15 @@ mod memory {
         /// A store for about `capacity` used-token records (at least one per
         /// shard), starting one minute ahead of the system clock. If the clock
         /// reads before 2020, the store refuses every token (fail closed).
+        ///
+        /// The minute covers a clock that steps back across a restart, so a
+        /// token used just before the restart cannot pass again. Its cost:
+        /// one-time tokens issued in the store's first minute are refused as
+        /// [`Reason::Forgotten`](crate::Reason::Forgotten) (benign, severity
+        /// 1), so a form opened right after a deploy needs a fresh token. To
+        /// avoid it, use [`starting_at`](Self::starting_at) with a high-water
+        /// mark persisted across restarts (the latest `now` the store saw), or
+        /// with the current time on hosts whose clock never steps back.
         ///
         /// The capacity is split evenly over 64 shards, all of one session's
         /// records live in one shard, and a session may hold at most an eighth
@@ -404,13 +421,16 @@ mod memory {
         fn consume(&self, use_: &NonceUse<'_>) -> Result<bool, StoreError> {
             if use_.issued_at <= self.started_at {
                 // Possibly used before this store's memory began.
-                return Ok(false);
+                return Err(StoreError::Forgotten);
             }
             let session = self.sessions.hash_one(use_.session);
             let mut shard = lock(&self.shards[(session % SHARDS as u64) as usize]);
-            if shard.records.contains_key(&use_.nonce) || use_.expires_at < shard.forgotten_below {
-                // Used, or possibly used and since dropped.
+            if shard.records.contains_key(&use_.nonce) {
                 return Ok(false);
+            }
+            if use_.expires_at < shard.forgotten_below {
+                // Possibly used, and its record since dropped.
+                return Err(StoreError::Forgotten);
             }
             if shard.records.len() >= self.shard_capacity
                 || shard.held(session) >= self.session_limit
@@ -520,8 +540,14 @@ mod memory {
         #[test]
         fn test_memory_store_refuses_tokens_from_before_its_start() {
             let s = MemoryStore::starting_at(10, 1000);
-            assert_eq!(s.consume(&use_(nonce(1), 999, 2000, 1001)), Ok(false));
-            assert_eq!(s.consume(&use_(nonce(2), 1000, 2000, 1001)), Ok(false));
+            assert_eq!(
+                s.consume(&use_(nonce(1), 999, 2000, 1001)),
+                Err(StoreError::Forgotten)
+            );
+            assert_eq!(
+                s.consume(&use_(nonce(2), 1000, 2000, 1001)),
+                Err(StoreError::Forgotten)
+            );
             assert_eq!(s.consume(&use_(nonce(3), 1001, 2000, 1001)), Ok(true));
             assert!(s.len() == 1);
         }
@@ -582,8 +608,17 @@ mod memory {
             // A purge at 35 drops the record expiring at 30, not the one at 40.
             s.purge_expired(35);
             assert_eq!(s.len(), 1);
-            assert_eq!(s.consume(&use_(nonce(1), 1, 30, 20)), Ok(false));
-            assert_eq!(s.consume(&use_(nonce(3), 1, 30, 20)), Ok(false));
+            // Both expire before the dropped record: the store cannot vouch.
+            assert_eq!(
+                s.consume(&use_(nonce(1), 1, 30, 20)),
+                Err(StoreError::Forgotten)
+            );
+            assert_eq!(
+                s.consume(&use_(nonce(3), 1, 30, 20)),
+                Err(StoreError::Forgotten)
+            );
+            // A recorded nonce is a plain replay.
+            assert_eq!(s.consume(&use_(nonce(2), 1, 40, 20)), Ok(false));
             assert_eq!(s.consume(&use_(nonce(4), 1, 31, 20)), Ok(true));
             // A purge that drops nothing remembers nothing new.
             s.purge_expired(31);
@@ -591,7 +626,10 @@ mod memory {
             // The mark only moves forward.
             s.purge_expired(1_000);
             s.purge_expired(35);
-            assert_eq!(s.consume(&use_(nonce(6), 1, 40, 20)), Ok(false));
+            assert_eq!(
+                s.consume(&use_(nonce(6), 1, 40, 20)),
+                Err(StoreError::Forgotten)
+            );
         }
 
         #[test]
@@ -677,7 +715,7 @@ mod memory {
             // A token issued long ago predates this store.
             assert_eq!(
                 s.consume(&use_(nonce(1), 1_600_000_000, u64::MAX, 0)),
-                Ok(false)
+                Err(StoreError::Forgotten)
             );
         }
 

@@ -26,7 +26,7 @@ use crate::once::NonceStore;
 /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// use csrf_sec::{Binding, Csrf};
 ///
-/// let csrf = Csrf::new(*b"an example key, 32 bytes long!!!")?;
+/// let csrf = Csrf::new(*b"an example key, 32 bytes long!!!", "https://example.com")?;
 /// let change_email = Binding::new("session-1").scope("POST /account/email");
 ///
 /// let token = csrf.issue_with(&change_email)?;
@@ -80,7 +80,10 @@ impl<'a> Binding<'a> {
 
     /// Make the token one-time: the first successful verify records its nonce
     /// in `store`, so a second use fails as
-    /// [`Reason::AlreadyUsed`](crate::Reason::AlreadyUsed). Issuing does not
+    /// [`Reason::AlreadyUsed`](crate::Reason::AlreadyUsed). In a link, a
+    /// one-time token needs `Referrer-Policy: no-referrer` on the page it lands
+    /// on and a short [`once_lifetime`](crate::Builder::once_lifetime); a
+    /// session token never goes in a URL. Issuing does not
     /// touch the store. One-time tokens are
     /// [`ONCE_TOKEN_LEN`](crate::ONCE_TOKEN_LEN) characters. A one-time binding
     /// always checks and consumes the token, whatever the method (a one-time

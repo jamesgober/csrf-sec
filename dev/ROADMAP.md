@@ -105,6 +105,13 @@ Every public item checked for one-line common uses, plain names, and one way to 
 - [x] `RequestFacts::with_class`, public `FetchSite`, and `Token::len`/`is_empty` removed (D-105).
 - [x] `docs/API.md` lists every public item: a script checked all 34 exported items and all 60 public functions (D-106).
 
+## v0.11.0 - Fourth review (DONE, 2026-11-11)
+An independent review of 0.10.0: no forgery, no pass forged; two low findings and four notes (D-107 to D-112).
+- [x] F-1: the own origin is configuration, required in `Strict` and `PolicyOnly`; nothing left to the token as `NoFacts` (D-107).
+- [x] F-2: `Reason::Forgotten` for a token the one-time store cannot vouch for, not `already_used` (D-108).
+- [x] F-3: `Origin` and `Referer` trimmed (D-109). F-5: one-time links documented (D-110). F-6: `PolicyOnly` and `Sec-Fetch-Site: none` recorded (D-111). F-4: a fast fixed-size constant-time compare asked of crypt-io (D-112).
+- [x] The runtime dependency tree reviewed: seven third-party crates, all crypt-io's audited crypto (D-113).
+
 ## v1.0.0 - Stable
 1.0 freezes the API until 2.0 and the token format for 1.x, and a crates.io version cannot be taken back, so it waits until the API has been used for real. Each item below is required; nothing is ticked on intent.
 

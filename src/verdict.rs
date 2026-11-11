@@ -58,9 +58,13 @@ pub enum Reason {
     /// The check cannot run: no session id was given, or `PolicyOnly` mode
     /// got a request without Fetch Metadata.
     Unverifiable,
-    /// A one-time token was presented again (or the store cannot vouch that
-    /// it was not, for example after a restart).
+    /// A one-time token was presented again.
     AlreadyUsed,
+    /// The one-time store cannot tell whether this token was used: it was
+    /// issued before the store's memory began (a restart) or before records
+    /// the store dropped. Benign; refused because it cannot be vouched for.
+    /// Issue a new token.
+    Forgotten,
     /// The one-time token store could not answer.
     StoreUnavailable,
     /// This session already holds as many one-time records as the store
@@ -79,7 +83,7 @@ impl Reason {
     /// | `WrongScope`, `AlreadyUsed` | 20 |
     /// | `Malformed`, `TooManyUses` | 10 |
     /// | `Missing`, `UnknownKey`, `NotYetValid`, `Unverifiable`, `StoreUnavailable` | 5 |
-    /// | `StaleSession`, `Expired` | 1 |
+    /// | `StaleSession`, `Expired`, `Forgotten` | 1 |
     #[must_use]
     pub const fn severity(self) -> u8 {
         match self {
@@ -92,7 +96,7 @@ impl Reason {
             | Self::NotYetValid
             | Self::Unverifiable
             | Self::StoreUnavailable => 5,
-            Self::StaleSession | Self::Expired => 1,
+            Self::StaleSession | Self::Expired | Self::Forgotten => 1,
         }
     }
 
@@ -112,6 +116,7 @@ impl Reason {
             Self::OriginMismatch => "origin_mismatch",
             Self::Unverifiable => "unverifiable",
             Self::AlreadyUsed => "already_used",
+            Self::Forgotten => "forgotten",
             Self::StoreUnavailable => "store_unavailable",
             Self::TooManyUses => "too_many_uses",
         }
@@ -133,7 +138,7 @@ impl fmt::Display for Reason {
 /// # fn main() -> Result<(), csrf_sec::Error> {
 /// use csrf_sec::{Csrf, Reason};
 ///
-/// let csrf = Csrf::new(*b"an example key, 32 bytes long!!!")?;
+/// let csrf = Csrf::new(*b"an example key, 32 bytes long!!!", "https://example.com")?;
 /// let refused = csrf.verify("session-1", "not a token").unwrap_err();
 /// assert_eq!(refused.reason(), Reason::Malformed);
 /// assert_eq!(refused.to_string(), "request forgery check failed: malformed");
@@ -203,7 +208,7 @@ pub enum OriginCheck {
 /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// use csrf_sec::{Csrf, KeyId};
 ///
-/// let csrf = Csrf::new(*b"an example key, 32 bytes long!!!")?;
+/// let csrf = Csrf::new(*b"an example key, 32 bytes long!!!", "https://example.com")?;
 /// let token = csrf.issue("session-1")?;
 /// let ok = csrf.verify("session-1", &token)?;
 /// assert_eq!(ok.key_id(), Some(KeyId(0)));
@@ -279,7 +284,7 @@ mod tests {
     use super::{OriginCheck, Reason, Rejected, Verified};
     use crate::KeyId;
 
-    const ALL: [Reason; 14] = [
+    const ALL: [Reason; 15] = [
         Reason::Missing,
         Reason::Malformed,
         Reason::UnknownKey,
@@ -294,11 +299,12 @@ mod tests {
         Reason::AlreadyUsed,
         Reason::StoreUnavailable,
         Reason::TooManyUses,
+        Reason::Forgotten,
     ];
 
     #[test]
     fn test_reason_severity_matches_plan_table() {
-        let expected = [5, 10, 5, 40, 1, 1, 5, 20, 30, 30, 5, 20, 5, 10];
+        let expected = [5, 10, 5, 40, 1, 1, 5, 20, 30, 30, 5, 20, 5, 10, 1];
         for (r, s) in ALL.iter().zip(expected) {
             assert_eq!(r.severity(), s, "{r:?}");
         }
