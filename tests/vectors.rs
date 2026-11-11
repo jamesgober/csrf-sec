@@ -134,7 +134,11 @@ const VECTORS: &[Vector] = &[
 ];
 
 fn csrf(key_id: u8) -> Csrf {
-    Csrf::builder().key(KeyId(key_id), KEY).build().unwrap()
+    Csrf::builder()
+        .own_origin("https://example.com")
+        .key(KeyId(key_id), KEY)
+        .build()
+        .unwrap()
 }
 
 #[test]

@@ -96,6 +96,7 @@ impl NonceStore for FailingStore {
 #[test]
 fn test_hot_paths_allocate_nothing() {
     let csrf = Csrf::builder()
+        .own_origin("https://example.com")
         .key(KeyId(2), *b"no-alloc test key, 32 bytes!!!!!")
         .retired(KeyId(1), *b"retired test key, 32 bytes!!!!!!", NOW + 3600)
         .allow_origin("https://partner.example")
@@ -182,6 +183,7 @@ fn test_hot_paths_allocate_nothing() {
 /// nothing; so does the streamed MAC for long inputs.
 fn every_reason_allocates_nothing(csrf: &Csrf, binding: &Binding<'_>, session: &str) {
     let other_ring = Csrf::builder()
+        .own_origin("https://example.com")
         .key(KeyId(9), *b"another ring's key, 32 bytes!!!!")
         .build()
         .unwrap();

@@ -30,7 +30,7 @@ impl RandomSource for Pads {
 }
 
 fn csrf() -> Csrf {
-    Csrf::new(KEY).unwrap()
+    Csrf::new(KEY, "https://example.com").unwrap()
 }
 
 /// Finding 1: one session filling the one-time store must not lock everyone
@@ -85,6 +85,7 @@ fn f1_one_time_tokens_have_their_own_lifetime() {
     );
     // Configurable, and never longer than the general lifetime.
     let short = Csrf::builder()
+        .own_origin("https://example.com")
         .key(KeyId(0), KEY)
         .once_lifetime(Duration::from_secs(300))
         .build()
@@ -92,6 +93,7 @@ fn f1_one_time_tokens_have_their_own_lifetime() {
     assert_eq!(short.once_lifetime(), Duration::from_secs(300));
     assert_eq!(
         Csrf::builder()
+            .own_origin("https://example.com")
             .key(KeyId(0), KEY)
             .lifetime(Duration::from_secs(600))
             .once_lifetime(Duration::from_secs(601))
@@ -188,7 +190,7 @@ fn f4_memory_store_starts_ahead_of_the_clock() {
         c.verify_at(&b, t.as_bytes(), now + 40)
             .unwrap_err()
             .reason(),
-        Reason::AlreadyUsed
+        Reason::Forgotten
     );
     // Issued after the margin: accepted once.
     let t = c.issue_at(&b, now + 61, &mut Pads(6)).unwrap();
@@ -202,6 +204,7 @@ fn f5_out_of_range_times_fail_closed() {
     let ms = NOW * 1_000;
     assert_eq!(
         Csrf::builder()
+            .own_origin("https://example.com")
             .key(KeyId(1), KEY)
             .retired(KeyId(2), *b"an old key, thirty-two bytes!!!!", ms)
             .build()
@@ -233,6 +236,7 @@ fn f5_out_of_range_times_fail_closed() {
 fn f6_planted_cookie_is_stopped_by_layer_one_not_the_mac() {
     let planted = "attacker-chosen-cookie-value";
     let token_only = Csrf::builder()
+        .own_origin("https://example.com")
         .key(KeyId(0), KEY)
         .mode(Mode::TokenOnly)
         .build()
@@ -249,7 +253,11 @@ fn f6_planted_cookie_is_stopped_by_layer_one_not_the_mac() {
             .is_ok(),
         "TokenOnly cannot tell: this is why the docs require __Host- cookies"
     );
-    let strict = Csrf::builder().key(KeyId(0), KEY).build().unwrap();
+    let strict = Csrf::builder()
+        .own_origin("https://example.com")
+        .key(KeyId(0), KEY)
+        .build()
+        .unwrap();
     let t = strict
         .issue_at(&Binding::new(planted), NOW, &mut Pads(9))
         .unwrap();
@@ -267,6 +275,7 @@ fn f6_planted_cookie_is_stopped_by_layer_one_not_the_mac() {
 #[test]
 fn f10_rotation_keeps_the_last_second() {
     let c = Csrf::builder()
+        .own_origin("https://example.com")
         .key(KeyId(1), KEY)
         .lifetime(Duration::from_secs(600))
         .skew(Duration::from_secs(60))
@@ -311,7 +320,7 @@ fn r2_purged_record_cannot_pass_again_on_an_earlier_clock() {
         c.verify_at(&b, t.as_bytes(), NOW + 3_600)
             .unwrap_err()
             .reason(),
-        Reason::AlreadyUsed
+        Reason::Forgotten
     );
 }
 
@@ -320,6 +329,7 @@ fn r2_purged_record_cannot_pass_again_on_an_earlier_clock() {
 #[test]
 fn r2_purged_record_cannot_pass_again_with_zero_skew() {
     let c = Csrf::builder()
+        .own_origin("https://example.com")
         .key(KeyId(1), KEY)
         .skew(Duration::ZERO)
         .build()
@@ -333,7 +343,7 @@ fn r2_purged_record_cannot_pass_again_with_zero_skew() {
         c.verify_at(&b, t.as_bytes(), NOW + 3_600)
             .unwrap_err()
             .reason(),
-        Reason::AlreadyUsed
+        Reason::Forgotten
     );
 }
 
@@ -351,7 +361,7 @@ fn r2_forgetting_refuses_nothing_newer_than_what_was_dropped() {
     store.purge_expired(150);
     assert_eq!(
         use_(2, 100, 20),
-        Ok(false),
+        Err(StoreError::Forgotten),
         "expired no later than a dropped record"
     );
     assert_eq!(
@@ -422,12 +432,14 @@ fn r2_upgrade_path_keeps_one_time_tokens_single_use() {
     let lifetime = Duration::from_secs(12 * 3_600);
     // A 0.8 node: one-time tokens lived the whole (default) lifetime.
     let old = Csrf::builder()
+        .own_origin("https://example.com")
         .key(KeyId(0), KEY)
         .once_lifetime(lifetime)
         .build()
         .unwrap();
     // A 0.9 node during the rollout, configured as the upgrade notes say.
     let new = Csrf::builder()
+        .own_origin("https://example.com")
         .key(KeyId(0), KEY)
         .once_lifetime(lifetime)
         .build()
@@ -454,11 +466,13 @@ fn r2_upgrade_path_keeps_one_time_tokens_single_use() {
 fn r3_no_expiry_keeps_the_default_one_time_lifetime() {
     let ten_minutes = Duration::from_secs(600);
     let a = Csrf::builder()
+        .own_origin("https://example.com")
         .key(KeyId(1), KEY)
         .lifetime(ten_minutes)
         .build()
         .unwrap();
     let b = Csrf::builder()
+        .own_origin("https://example.com")
         .key(KeyId(1), KEY)
         .lifetime(ten_minutes)
         .no_expiry()
@@ -485,6 +499,7 @@ fn r3_no_expiry_keeps_the_default_one_time_lifetime() {
 fn r3_one_time_binding_is_checked_on_safe_methods() {
     for mode in [Mode::Strict, Mode::TokenOnly, Mode::PolicyOnly] {
         let c = Csrf::builder()
+            .own_origin("https://example.com")
             .key(KeyId(1), KEY)
             .mode(mode)
             .build()
@@ -518,6 +533,7 @@ fn r3_one_time_binding_is_checked_on_safe_methods() {
 #[test]
 fn r3_rotation_outlasts_the_longest_token_lifetime() {
     let c = Csrf::builder()
+        .own_origin("https://example.com")
         .key(KeyId(1), KEY)
         .no_expiry()
         .lifetime(Duration::from_secs(600))
@@ -537,6 +553,7 @@ fn r3_rotation_outlasts_the_longest_token_lifetime() {
     let latest = 1_577_836_800 + u64::from(u32::MAX) + 3_600 + 30 + 1;
     let build = |retire_at| {
         Csrf::builder()
+            .own_origin("https://example.com")
             .key(KeyId(1), KEY)
             .retired(KeyId(2), *b"the next key, thirty-two bytes!!", retire_at)
             .no_expiry()
@@ -554,6 +571,7 @@ fn r3_rotation_outlasts_the_longest_token_lifetime() {
 #[test]
 fn r3_no_expiry_refuses_out_of_range_clocks() {
     let c = Csrf::builder()
+        .own_origin("https://example.com")
         .key(KeyId(1), KEY)
         .no_expiry()
         .build()
@@ -571,4 +589,135 @@ fn r3_no_expiry_refuses_out_of_range_clocks() {
             "{now}"
         );
     }
+}
+
+// Fourth review (independent, of 0.10.0): two low findings and a note, each
+// pinned here before its fix (PLAN D-107 to D-111).
+
+const OWN: &str = "https://example.com";
+
+/// F-1: the site's own origin is configuration. Without it the Origin and
+/// Referer check had nothing to compare with and passed a cross-site
+/// request as `NoFacts`; now a missing or empty own origin is a build error.
+#[test]
+fn r4_f1_own_origin_is_required_configuration() {
+    assert_eq!(Csrf::new(KEY, "").unwrap_err(), Error::InvalidOrigin);
+    assert_eq!(
+        Csrf::new(KEY, "https://example.com/").unwrap_err(),
+        Error::InvalidOrigin
+    );
+    for mode in [Mode::Strict, Mode::PolicyOnly] {
+        assert_eq!(
+            Csrf::builder()
+                .key(KeyId(0), KEY)
+                .mode(mode)
+                .build()
+                .unwrap_err(),
+            Error::MissingOrigin,
+            "{mode:?}"
+        );
+    }
+    // Token-only clients send no origin facts; nothing to configure.
+    let token_only = Csrf::builder()
+        .key(KeyId(0), KEY)
+        .mode(Mode::TokenOnly)
+        .build()
+        .unwrap();
+    // And with nothing to compare against, a foreign origin is refused, never
+    // left to the token as `NoFacts`.
+    let foreign = RequestFacts::new("POST").origin("https://evil.example");
+    assert_eq!(
+        token_only.policy(&foreign).unwrap_err().reason(),
+        Reason::OriginMismatch
+    );
+}
+
+/// F-1: a request on a configured `Csrf`, built from its headers, is judged
+/// against the configured origin.
+#[test]
+fn r4_f1_configured_origin_judges_origin_and_referer() {
+    let c = Csrf::new(KEY, OWN).unwrap();
+    let judge = |header: &str, value: &str| {
+        let headers = std::collections::HashMap::from([(header, value)]);
+        c.policy(&RequestFacts::from_headers("POST", |name| {
+            headers.get(name)
+        }))
+        .map_err(|e| e.reason())
+    };
+    assert!(judge("origin", OWN).is_ok());
+    assert_eq!(
+        judge("origin", "https://evil.example"),
+        Err(Reason::OriginMismatch)
+    );
+    assert_eq!(
+        judge("referer", "https://evil.example/page"),
+        Err(Reason::OriginMismatch)
+    );
+    assert!(judge("referer", "https://example.com/form").is_ok());
+}
+
+/// F-1: a per-request own origin (one `Csrf` serving several sites) that is
+/// given but empty matches nothing: it fails closed, never open.
+#[test]
+fn r4_f1_empty_per_request_origin_fails_closed() {
+    let c = Csrf::new(KEY, OWN).unwrap();
+    for origin in ["https://evil.example", OWN] {
+        let facts = RequestFacts::new("POST").origin(origin).own_origin("");
+        assert_eq!(
+            c.policy(&facts).unwrap_err().reason(),
+            Reason::OriginMismatch,
+            "{origin}"
+        );
+    }
+    // The same through a Referer: its origin part is compared, never an
+    // empty slice against the empty override.
+    let referer = RequestFacts::new("POST")
+        .referer("https://example.com/form")
+        .own_origin("");
+    assert_eq!(
+        c.policy(&referer).unwrap_err().reason(),
+        Reason::OriginMismatch
+    );
+    let other_site = RequestFacts::new("POST")
+        .origin("https://shop.example")
+        .own_origin("https://shop.example");
+    assert!(c.policy(&other_site).is_ok());
+}
+
+/// F-2: a fresh `MemoryStore` cannot vouch for tokens from its first minute.
+/// That is reported as `Forgotten` (benign), never as a replay.
+#[test]
+fn r4_f2_fresh_store_reports_forgotten_not_replay() {
+    let c = Csrf::new(KEY, OWN).unwrap();
+    let store = MemoryStore::starting_at(64_000, NOW + 60);
+    let b = Binding::new("s").once(&store);
+    let t = c.issue_at(&b, NOW, &mut Pads(41)).unwrap();
+    let refused = c.verify_at(&b, t.as_bytes(), NOW + 5).unwrap_err();
+    assert_eq!(refused.reason(), Reason::Forgotten);
+    assert_eq!(refused.severity(), 1);
+    assert_eq!(Reason::Forgotten.as_str(), "forgotten");
+    // A token issued after the store's start passes once, then is a replay.
+    let later = c.issue_at(&b, NOW + 61, &mut Pads(42)).unwrap();
+    assert!(c.verify_at(&b, later.as_bytes(), NOW + 62).is_ok());
+    assert_eq!(
+        c.verify_at(&b, later.as_bytes(), NOW + 63)
+            .unwrap_err()
+            .reason(),
+        Reason::AlreadyUsed
+    );
+}
+
+/// F-3: `Origin`, `Referer`, and a per-request own origin are trimmed of
+/// surrounding spaces and tabs, as `Sec-Fetch-Site` always was.
+#[test]
+fn r4_f3_origin_and_referer_whitespace_is_trimmed() {
+    let c = Csrf::new(KEY, OWN).unwrap();
+    let facts = RequestFacts::new("POST").origin(" https://example.com\t");
+    assert!(c.policy(&facts).is_ok());
+    let facts = RequestFacts::new("POST").referer("\thttps://example.com/form ");
+    assert!(c.policy(&facts).is_ok());
+    let facts = RequestFacts::new("POST")
+        .origin("https://shop.example")
+        .own_origin(" https://shop.example ");
+    assert!(c.policy(&facts).is_ok());
 }

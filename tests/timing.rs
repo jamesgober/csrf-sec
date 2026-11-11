@@ -179,7 +179,7 @@ fn check(name: &str, inputs: [&[u8]; 2], run: impl Fn(&[u8])) {
 #[test]
 #[ignore = "statistical timing test; run with --release --ignored"]
 fn timing_tag_comparison_does_not_depend_on_where_tags_differ() {
-    let c = Csrf::new(*b"timing test key, thirty-two byte").unwrap();
+    let c = Csrf::new(*b"timing test key, thirty-two byte", "https://example.com").unwrap();
     let b = Binding::new("victim-session");
     let real = c.issue_at(&b, NOW, &mut Pads(1)).unwrap();
     let bytes = decode(real.as_bytes());
@@ -209,7 +209,7 @@ fn timing_tag_comparison_does_not_depend_on_where_tags_differ() {
 #[test]
 #[ignore = "statistical timing test; run with --release --ignored"]
 fn timing_decoding_does_not_depend_on_the_characters() {
-    let c = Csrf::new(*b"timing test key, thirty-two byte").unwrap();
+    let c = Csrf::new(*b"timing test key, thirty-two byte", "https://example.com").unwrap();
     let b = Binding::new("victim-session");
     let token = c.issue_at(&b, NOW, &mut Pads(3)).unwrap();
     let masked = decode(token.as_bytes());
@@ -236,7 +236,7 @@ fn timing_decoding_does_not_depend_on_the_characters() {
 #[test]
 #[ignore = "statistical timing test; run with --release --ignored"]
 fn timing_method_detects_a_real_difference() {
-    let c = Csrf::new(*b"timing test key, thirty-two byte").unwrap();
+    let c = Csrf::new(*b"timing test key, thirty-two byte", "https://example.com").unwrap();
     let b = Binding::new("victim-session");
     let token = c.issue_at(&b, NOW, &mut Pads(2)).unwrap();
     // Same length, but one is not base64url (refused after the constant-time

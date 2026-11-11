@@ -47,6 +47,7 @@ impl NonceStore for ArrayStore {
 
 fn csrf() -> Csrf {
     Csrf::builder()
+        .own_origin("https://example.com")
         .key(KeyId(1), *b"benchmark key, thirty-two bytes!")
         .allow_origin("https://partner.example")
         .build()
@@ -217,6 +218,7 @@ fn one_time(c: &mut Criterion) {
     // session stays under its quota and expired records are dropped as it
     // reaches it. Every verify must pass.
     let short = Csrf::builder()
+        .own_origin("https://example.com")
         .key(KeyId(1), *b"benchmark key, thirty-two bytes!")
         .once_lifetime(Duration::from_secs(50))
         .skew(Duration::from_secs(10))
@@ -251,7 +253,12 @@ fn randomness(c: &mut Criterion) {
 fn setup(c: &mut Criterion) {
     let mut group = c.benchmark_group("setup");
     group.bench_function("Csrf::new", |b| {
-        b.iter(|| Csrf::new(black_box(*b"benchmark key, thirty-two bytes!")))
+        b.iter(|| {
+            Csrf::new(
+                black_box(*b"benchmark key, thirty-two bytes!"),
+                "https://example.com",
+            )
+        })
     });
     group.finish();
 }

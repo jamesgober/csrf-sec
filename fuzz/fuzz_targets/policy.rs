@@ -29,7 +29,7 @@ fuzz_target!(|data: &[u8]| {
     let mut next = || parts.next().unwrap_or(&[]);
     let (method, site, origin, referer, own, allow) = (next(), next(), next(), next(), next(), next());
 
-    let mut builder = Csrf::builder().key(KeyId(0), *b"fuzz target key, thirty-two byte");
+    let mut builder = Csrf::builder().own_origin("https://example.com").key(KeyId(0), *b"fuzz target key, thirty-two byte");
     let allow_text = std::str::from_utf8(allow).ok();
     if let Some(entry) = allow_text.filter(|s| !s.is_empty()) {
         builder = builder.allow_origin(entry);
@@ -45,12 +45,13 @@ fuzz_target!(|data: &[u8]| {
         .own_origin(own);
     let decision = csrf.policy(&facts);
 
-    let quick = RequestFacts::from_headers(method, own, |name| match name {
+    let quick = RequestFacts::from_headers(method, |name| match name {
         "sec-fetch-site" => Some(site),
         "origin" => Some(origin),
         "referer" => Some(referer),
         _ => None,
-    });
+    })
+    .own_origin(own);
     assert_eq!(csrf.policy(&quick), decision, "from_headers differs from the setters");
 
     if MethodClass::classify(method) == MethodClass::Safe {

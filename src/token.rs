@@ -103,7 +103,7 @@ pub(crate) const ONCE: Layout = Layout {
 /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// use csrf_sec::{Csrf, FIELD_NAME, TOKEN_LEN};
 ///
-/// let csrf = Csrf::new(*b"an example key, 32 bytes long!!!")?;
+/// let csrf = Csrf::new(*b"an example key, 32 bytes long!!!", "https://example.com")?;
 /// let token = csrf.issue("session-1")?;
 /// assert_eq!(token.len(), TOKEN_LEN);
 ///
@@ -485,7 +485,7 @@ mod tests {
     #[test]
     fn test_token_views_agree() {
         use crate::{Binding, Csrf, OsRandom};
-        let c = Csrf::new(*b"token view tests, thirty-two by!").unwrap();
+        let c = Csrf::new(*b"token view tests, thirty-two by!", "https://example.com").unwrap();
         let t = c
             .issue_at(&Binding::new("s"), EPOCH + 100, &mut OsRandom)
             .unwrap();

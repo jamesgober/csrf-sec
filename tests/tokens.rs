@@ -70,7 +70,7 @@ fn encode(bytes: &[u8]) -> Vec<u8> {
 }
 
 fn csrf() -> Csrf {
-    Csrf::new(KEY).unwrap()
+    Csrf::new(KEY, "https://example.com").unwrap()
 }
 
 #[test]
@@ -225,7 +225,7 @@ fn test_session_scope_boundary_is_canonical() {
 #[test]
 fn test_token_never_verifies_under_another_key() {
     let c = csrf();
-    let other = Csrf::new(OTHER_KEY).unwrap();
+    let other = Csrf::new(OTHER_KEY, "https://example.com").unwrap();
     let b = Binding::new("s");
     let t = c.issue_at(&b, NOW, &mut TestPads(19)).unwrap();
     assert_eq!(
@@ -233,7 +233,11 @@ fn test_token_never_verifies_under_another_key() {
         Reason::BadMac
     );
     // Same key bytes under another id: still refused.
-    let other_id = Csrf::builder().key(KeyId(9), KEY).build().unwrap();
+    let other_id = Csrf::builder()
+        .own_origin("https://example.com")
+        .key(KeyId(9), KEY)
+        .build()
+        .unwrap();
     assert_eq!(
         other_id
             .verify_at(&b, t.as_bytes(), NOW)
@@ -307,6 +311,7 @@ fn test_previous_session_reports_stale_and_never_passes() {
 #[test]
 fn test_mac_is_checked_before_expiry() {
     let c = Csrf::builder()
+        .own_origin("https://example.com")
         .key(KeyId(0), KEY)
         .lifetime(Duration::from_secs(60))
         .build()

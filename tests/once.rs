@@ -57,7 +57,7 @@ impl NonceStore for SpyStore {
 }
 
 fn csrf() -> Csrf {
-    Csrf::new(KEY).unwrap()
+    Csrf::new(KEY, "https://example.com").unwrap()
 }
 
 fn store() -> MemoryStore {
@@ -103,6 +103,7 @@ fn test_once_tokens_are_independent() {
 #[test]
 fn test_store_receives_the_documented_record() {
     let c = Csrf::builder()
+        .own_origin("https://example.com")
         .key(KeyId(0), KEY)
         .lifetime(std::time::Duration::from_secs(600))
         .skew(std::time::Duration::from_secs(30))
@@ -164,7 +165,7 @@ fn test_forged_and_wrong_tokens_never_reach_the_store() {
             .reason(),
         Reason::NotYetValid
     );
-    let foreign = Csrf::new(*b"another key entirely, 32 bytes!!").unwrap();
+    let foreign = Csrf::new(*b"another key entirely, 32 bytes!!", "https://example.com").unwrap();
     assert_eq!(
         foreign
             .verify_at(&b, t.as_bytes(), NOW)
@@ -268,7 +269,7 @@ fn test_restarted_memory_store_refuses_older_tokens() {
         c.verify_at(&b, t.as_bytes(), NOW + 20)
             .unwrap_err()
             .reason(),
-        Reason::AlreadyUsed
+        Reason::Forgotten
     );
     // Tokens issued after the restart work.
     let fresh = c.issue_at(&b, NOW + 11, &mut TestPads(10)).unwrap();
@@ -320,6 +321,7 @@ fn test_once_binding_checks_the_token_in_every_mode() {
         .enumerate()
     {
         let c = Csrf::builder()
+            .own_origin("https://example.com")
             .key(KeyId(0), KEY)
             .mode(mode)
             .build()
@@ -343,6 +345,7 @@ fn test_once_binding_checks_the_token_in_every_mode() {
     // A safe method needs nothing on a plain binding, but a one-time binding
     // always checks its token (D-093).
     let c = Csrf::builder()
+        .own_origin("https://example.com")
         .key(KeyId(0), KEY)
         .mode(Mode::PolicyOnly)
         .build()

@@ -81,9 +81,9 @@ const LABEL_FINGERPRINT: &[u8] = b"csrf-sec/v1 key fingerprint";
 /// ```
 /// use csrf_sec::{Csrf, KeyId};
 ///
-/// let a = Csrf::new(*b"an example key, 32 bytes long!!!")?;
-/// let b = Csrf::new(*b"an example key, 32 bytes long!!!")?;
-/// let c = Csrf::new(*b"a different key, 32 bytes long!!")?;
+/// let a = Csrf::new(*b"an example key, 32 bytes long!!!", "https://example.com")?;
+/// let b = Csrf::new(*b"an example key, 32 bytes long!!!", "https://example.com")?;
+/// let c = Csrf::new(*b"a different key, 32 bytes long!!", "https://example.com")?;
 /// let fp = |csrf: &Csrf| csrf.key_fingerprint(KeyId(0)).unwrap();
 /// assert_eq!(fp(&a), fp(&b));
 /// assert_ne!(fp(&a), fp(&c));

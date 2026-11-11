@@ -128,7 +128,7 @@ fn site(csrf: &Csrf, mut stream: TcpStream) {
 
     // The adapter's whole job: hand csrf-sec the facts as plain values.
     // An absent header reads as "", which csrf-sec treats as absent.
-    let facts = RequestFacts::from_headers(&req.method, SITE, |name| Some(req.header(name)));
+    let facts = RequestFacts::from_headers(&req.method, |name| Some(req.header(name)));
 
     if req.method == "POST" {
         let token = req.form_field(FIELD_NAME);
@@ -197,7 +197,9 @@ fn main() -> std::io::Result<()> {
     // A real service generates its key once, stores it, and loads it at every
     // start; the demo makes one per run.
     let key = Csrf::generate_key().map_err(|e| std::io::Error::other(e.to_string()))?;
-    let csrf = Arc::new(Csrf::new(key).map_err(|e| std::io::Error::other(e.to_string()))?);
+    let csrf = Arc::new(
+        Csrf::new(key, "https://example.com").map_err(|e| std::io::Error::other(e.to_string()))?,
+    );
 
     let bank = TcpListener::bind("127.0.0.1:7878")?;
     let evil = TcpListener::bind("127.0.0.1:7879")?;

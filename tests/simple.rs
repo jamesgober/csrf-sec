@@ -11,7 +11,7 @@ use proptest::prelude::*;
 const OWN: &str = "https://example.com";
 
 fn csrf() -> Csrf {
-    Csrf::new(*b"tier 1 tests, a 32 byte key!!!!!").unwrap()
+    Csrf::new(*b"tier 1 tests, a 32 byte key!!!!!", "https://example.com").unwrap()
 }
 
 /// Facts the long way, from the same headers, for comparison.
@@ -34,14 +34,14 @@ fn test_from_headers_is_one_line_and_checks_a_request() {
     let csrf = csrf();
     let token = csrf.issue("session-1").unwrap();
     let headers = HashMap::from([("sec-fetch-site", "same-origin"), ("origin", OWN)]);
-    let facts = RequestFacts::from_headers("POST", OWN, |name| headers.get(name));
+    let facts = RequestFacts::from_headers("POST", |name| headers.get(name));
     assert!(csrf.check(&facts, "session-1", &token).is_ok());
 
     let attack = HashMap::from([
         ("sec-fetch-site", "cross-site"),
         ("origin", "https://evil.example"),
     ]);
-    let facts = RequestFacts::from_headers("POST", OWN, |name| attack.get(name));
+    let facts = RequestFacts::from_headers("POST", |name| attack.get(name));
     assert_eq!(
         csrf.check(&facts, "session-1", &token)
             .unwrap_err()
@@ -55,11 +55,11 @@ fn test_from_headers_reads_the_referer() {
     // An older browser: no Fetch Metadata, no Origin, only a Referer.
     let csrf = csrf();
     let ours = HashMap::from([("referer", "https://example.com/form")]);
-    let facts = RequestFacts::from_headers("POST", OWN, |name| ours.get(name));
+    let facts = RequestFacts::from_headers("POST", |name| ours.get(name));
     assert_eq!(csrf.policy(&facts).unwrap(), OriginCheck::Referer);
 
     let theirs = HashMap::from([("referer", "https://evil.example/page")]);
-    let facts = RequestFacts::from_headers("POST", OWN, |name| theirs.get(name));
+    let facts = RequestFacts::from_headers("POST", |name| theirs.get(name));
     assert_eq!(
         csrf.policy(&facts).unwrap_err().reason(),
         Reason::OriginMismatch
@@ -69,7 +69,7 @@ fn test_from_headers_reads_the_referer() {
 #[test]
 fn test_from_headers_asks_for_lowercase_names() {
     let mut asked = Vec::new();
-    let _ = RequestFacts::from_headers("POST", OWN, |name: &str| {
+    let _ = RequestFacts::from_headers("POST", |name: &str| {
         asked.push(name.to_owned());
         None::<&str>
     });
@@ -80,11 +80,11 @@ fn test_from_headers_asks_for_lowercase_names() {
 #[test]
 fn test_from_headers_with_nothing_sent_judges_nothing() {
     let csrf = csrf();
-    let facts = RequestFacts::from_headers("POST", OWN, |_| None::<&[u8]>);
+    let facts = RequestFacts::from_headers("POST", |_| None::<&[u8]>);
     assert_eq!(csrf.policy(&facts).unwrap(), OriginCheck::NoFacts);
     // A safe method passes the policy whatever the headers say.
     let attack = HashMap::from([("sec-fetch-site", "cross-site")]);
-    let facts = RequestFacts::from_headers("GET", OWN, |name| attack.get(name));
+    let facts = RequestFacts::from_headers("GET", |name| attack.get(name));
     assert!(csrf.policy(&facts).is_ok());
 }
 
@@ -93,10 +93,15 @@ fn test_generate_key_gives_a_usable_new_key_each_time() {
     let a = Csrf::generate_key().unwrap();
     let b = Csrf::generate_key().unwrap();
     assert_ne!(a, b);
-    let csrf = Csrf::new(a).unwrap();
+    let csrf = Csrf::new(a, "https://example.com").unwrap();
     let token = csrf.issue("session-1").unwrap();
     assert!(csrf.verify("session-1", &token).is_ok());
-    assert!(Csrf::new(b).unwrap().verify("session-1", &token).is_err());
+    assert!(
+        Csrf::new(b, "https://example.com")
+            .unwrap()
+            .verify("session-1", &token)
+            .is_err()
+    );
 }
 
 #[test]
@@ -126,7 +131,7 @@ proptest! {
         if let Some(v) = &referer { headers.insert("referer", v.as_str()); }
         let csrf = csrf();
         let token = csrf.issue("s").unwrap();
-        let quick = RequestFacts::from_headers(method.as_str(), OWN, |name| headers.get(name));
+        let quick = RequestFacts::from_headers(method.as_str(), |name| headers.get(name));
         let long = by_hand(&method, &headers);
         let a = csrf.check(&quick, "s", &token).map(|v| v.origin_check()).map_err(|e| e.reason());
         let b = csrf.check(&long, "s", &token).map(|v| v.origin_check()).map_err(|e| e.reason());

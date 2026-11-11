@@ -46,7 +46,7 @@ fuzz_target!(|data: &[u8]| {
     if data.len() < 9 {
         return;
     }
-    let csrf = Csrf::new(*b"fuzz target key, thirty-two byte").unwrap();
+    let csrf = Csrf::new(*b"fuzz target key, thirty-two byte", "https://example.com").unwrap();
     let seed = u64::from_le_bytes(data[..8].try_into().unwrap());
     let binding = Binding::new("fuzz-session").scope("POST /fuzz");
     let token = csrf.issue_at(&binding, NOW, &mut Pads(seed)).unwrap();

@@ -15,7 +15,7 @@ use crate::key::KeyId;
 /// ```
 /// use csrf_sec::{Csrf, Error};
 ///
-/// assert_eq!(Csrf::new([0u8; 32]).unwrap_err(), Error::WeakKey(csrf_sec::KeyId(0)));
+/// assert_eq!(Csrf::new([0u8; 32], "https://example.com").unwrap_err(), Error::WeakKey(csrf_sec::KeyId(0)));
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
@@ -42,9 +42,15 @@ pub enum Error {
     InvalidLifetime,
     /// The skew is longer than the lifetime.
     InvalidSkew,
-    /// An allowed origin is not a serialized origin such as
-    /// `https://example.com`, or is `null`.
+    /// The own origin or an allowed origin is not a serialized origin such
+    /// as `https://example.com` (it is empty, has a path or trailing slash, or
+    /// is `null`).
     InvalidOrigin,
+    /// No own origin was configured, and the mode checks the request's
+    /// origin. Set [`Builder::own_origin`](crate::Builder::own_origin) (or use
+    /// [`Mode::TokenOnly`](crate::Mode::TokenOnly) for clients that send no
+    /// browser headers).
+    MissingOrigin,
     /// A token cannot be bound to an empty session id: it would be valid for
     /// every visitor. Bind to the guest session before login.
     EmptySession,
@@ -86,7 +92,10 @@ impl fmt::Display for Error {
             ),
             Self::InvalidSkew => f.write_str("clock skew must not be longer than the token lifetime"),
             Self::InvalidOrigin => f.write_str(
-                "allowed origin must be a serialized origin such as https://example.com, not null",
+                "own and allowed origins must be serialized origins such as https://example.com (no path, not null)",
+            ),
+            Self::MissingOrigin => f.write_str(
+                "set the site's own origin (Builder::own_origin), or use Mode::TokenOnly",
             ),
             Self::EmptySession => f.write_str("cannot bind a token to an empty session id"),
             Self::InvalidRetireTime => f.write_str(
@@ -118,6 +127,7 @@ mod tests {
             Error::InvalidLifetime,
             Error::InvalidSkew,
             Error::InvalidOrigin,
+            Error::MissingOrigin,
             Error::EmptySession,
             Error::InvalidRetireTime,
             Error::Clock,

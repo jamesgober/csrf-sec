@@ -30,13 +30,13 @@
 //! # let headers = std::collections::HashMap::from([("sec-fetch-site", "same-origin")]);
 //!
 //! # let key = Csrf::generate_key()?;
-//! let csrf = Csrf::new(key)?; // a stored 32-byte key, from Csrf::generate_key() once
+//! let csrf = Csrf::new(key, "https://example.com")?; // a stored 32-byte key, from Csrf::generate_key() once
 //!
 //! // Rendering a form: 59 characters, different on every call.
 //! let token = csrf.issue("session-id")?;
 //!
 //! // Handling the POST: request policy and token.
-//! let facts = RequestFacts::from_headers("POST", "https://example.com", |name| headers.get(name));
+//! let facts = RequestFacts::from_headers("POST", |name| headers.get(name));
 //! csrf.check(&facts, "session-id", &token)?;
 //!
 //! // Token only, for clients that send no browser headers:

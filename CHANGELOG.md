@@ -13,6 +13,65 @@
 
 ---
 
+## [0.11.0] - 2026-11-11
+
+An independent review of 0.10.0 found no way to forge a token or a pass,
+and two low findings, fixed here with a test each (`tests/review.rs`,
+`r4_*`). Breaking: the site's own origin is now configuration.
+
+### Security
+
+- The site's own origin is configuration, given once:
+  `Csrf::new(key, own_origin)` or `Builder::own_origin`, parsed and checked
+  at build. `Strict` and `PolicyOnly` refuse to build without one
+  (`Error::MissingOrigin`), and an empty or malformed one is
+  `Error::InvalidOrigin`. Before, a request built without an own origin (or
+  with an empty one, as from a missing configuration value) left a
+  well-formed cross-site `Origin` to the token as `NoFacts`, when the docs
+  said it is refused. Nothing is ever left that way now: with nothing to
+  compare against, an `Origin` or `Referer` is refused.
+- A per-request own origin (`RequestFacts::own_origin`, for one `Csrf`
+  serving several sites) that is given but empty matches nothing: it fails
+  closed, where it used to count as not given.
+
+### Added
+
+- `Reason::Forgotten` (`forgotten`, severity 1) and
+  `StoreError::Forgotten`: the one-time store cannot vouch for a token
+  issued before its memory began (a restart) or before records it dropped.
+  `MemoryStore` reported these as `already_used` (severity 20), so every
+  deploy raised false replay alarms. They are still refused.
+
+### Changed
+
+- `RequestFacts::from_headers(method, lookup)`: the own origin argument is
+  gone (it is configuration).
+- `Origin` and `Referer` values are trimmed of surrounding spaces and tabs,
+  as `Sec-Fetch-Site` always was, so a same-origin request is no longer
+  refused as a forgery over stray whitespace.
+
+### Fixed
+
+- Documentation: `MemoryStore::new` states what its one-minute start
+  margin costs (one-time tokens from the first minute are `forgotten`) and
+  how to avoid it (`starting_at` with a persisted high-water mark, or the
+  current time where the clock never steps back). A one-time token in a
+  link needs `Referrer-Policy: no-referrer` and a short `once_lifetime`; a
+  session token never goes in a URL.
+
+### Upgrading from 0.10
+
+- `Csrf::new(key)` becomes `Csrf::new(key, "https://your.site")`.
+- A builder in `Strict` or `PolicyOnly` needs `.own_origin("https://your.site")`.
+  `TokenOnly` needs none.
+- `RequestFacts::from_headers(method, own_origin, lookup)` becomes
+  `RequestFacts::from_headers(method, lookup)`.
+- A single site drops its per-request `.own_origin(..)`; one `Csrf`
+  serving several sites keeps it (or builds one `Csrf` per site).
+- Treat `forgotten` as benign in detection (like `expired`): issue a fresh
+  token. A custom `NonceStore` may return `Err(StoreError::Forgotten)` when
+  it cannot vouch; `Ok(false)` still means "used".
+
 ## [0.10.0] - 2026-11-11
 
 A simplicity pass over the public API before 1.0: the common uses each take
@@ -495,7 +554,8 @@ The scaffold and the plan. No functional code yet.
   keys and rotation, verdicts, threats T1-T15, architecture, ecosystem, open
   decisions, decision log), `dev/DIRECTIVES.md`, and `dev/ROADMAP.md`.
 
-[Unreleased]: https://github.com/jamesgober/csrf-sec/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/jamesgober/csrf-sec/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/jamesgober/csrf-sec/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/jamesgober/csrf-sec/compare/v0.9.4...v0.10.0
 [0.9.4]: https://github.com/jamesgober/csrf-sec/compare/v0.9.3...v0.9.4
 [0.9.3]: https://github.com/jamesgober/csrf-sec/compare/v0.9.2...v0.9.3

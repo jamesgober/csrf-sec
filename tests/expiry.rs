@@ -38,6 +38,7 @@ impl NonceStore for Fresh {
 
 fn no_expiry() -> Csrf {
     Csrf::builder()
+        .own_origin("https://example.com")
         .key(KeyId(1), KEY)
         .no_expiry()
         .build()
@@ -46,7 +47,7 @@ fn no_expiry() -> Csrf {
 
 #[test]
 fn tokens_expire_by_default() {
-    let c = Csrf::new(KEY).unwrap();
+    let c = Csrf::new(KEY, "https://example.com").unwrap();
     assert!(c.expires());
     let b = Binding::new("s");
     let t = c.issue_at(&b, NOW, &mut Pads(1)).unwrap();
@@ -117,6 +118,7 @@ fn without_expiry_one_time_tokens_still_expire() {
 #[test]
 fn without_expiry_rotation_keeps_the_old_key_for_one_lifetime() {
     let c = Csrf::builder()
+        .own_origin("https://example.com")
         .key(KeyId(1), KEY)
         .no_expiry()
         .lifetime(Duration::from_secs(600))
@@ -145,6 +147,7 @@ fn without_expiry_one_time_lifetime_is_not_capped_by_the_lifetime() {
     // The lifetime only sets the rotation grace here; a one-time lifetime
     // longer than it is allowed.
     let c = Csrf::builder()
+        .own_origin("https://example.com")
         .key(KeyId(1), KEY)
         .no_expiry()
         .lifetime(Duration::from_secs(600))
@@ -155,6 +158,7 @@ fn without_expiry_one_time_lifetime_is_not_capped_by_the_lifetime() {
     // With expiry it is still capped.
     assert_eq!(
         Csrf::builder()
+            .own_origin("https://example.com")
             .key(KeyId(1), KEY)
             .lifetime(Duration::from_secs(600))
             .once_lifetime(Duration::from_secs(3_600))
@@ -167,6 +171,16 @@ fn without_expiry_one_time_lifetime_is_not_capped_by_the_lifetime() {
 #[test]
 fn debug_shows_the_setting() {
     assert!(format!("{:?}", no_expiry()).contains("expires: false"));
-    assert!(format!("{:?}", Csrf::new(KEY).unwrap()).contains("expires: true"));
-    assert!(format!("{:?}", Csrf::builder().no_expiry()).contains("expires: false"));
+    assert!(
+        format!("{:?}", Csrf::new(KEY, "https://example.com").unwrap()).contains("expires: true")
+    );
+    assert!(
+        format!(
+            "{:?}",
+            Csrf::builder()
+                .own_origin("https://example.com")
+                .no_expiry()
+        )
+        .contains("expires: false")
+    );
 }

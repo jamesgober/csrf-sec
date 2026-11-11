@@ -29,6 +29,7 @@ impl RandomSource for DemoRng {
 
 fn main() -> Result<(), Error> {
     let csrf = Csrf::builder()
+        .own_origin("https://example.com")
         .key(KeyId(7), *b"tier three example key, 32 bytes")
         .allow_origin("https://example.com")
         .build()?;
