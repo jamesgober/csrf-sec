@@ -218,6 +218,40 @@ proptest! {
         let _ = c.check_at(&facts, &Binding::new("s"), b"", NOW);
     }
 
+    /// For an unsafe method and a plain binding, `policy` then `verify_at`
+    /// gives exactly what `check_at` gives in `Strict`: the split an adapter
+    /// uses when the token is in a body it reads only after the origin check.
+    #[test]
+    fn prop_policy_then_verify_is_strict_check(
+        method in prop_oneof![Just(b"POST".to_vec()), Just(b"PUT".to_vec()), Just(b"DELETE".to_vec()), bytes(10)],
+        site in prop_oneof![Just(b"".to_vec()), Just(b"same-origin".to_vec()), Just(b"same-site".to_vec()), Just(b"cross-site".to_vec()), Just(b"none".to_vec()), bytes(16)],
+        origin in prop_oneof![Just(b"".to_vec()), Just(b"https://example.com".to_vec()), Just(b"https://evil.example".to_vec()), Just(b"null".to_vec()), bytes(40)],
+        referer in prop_oneof![Just(b"".to_vec()), Just(b"https://example.com/form".to_vec()), Just(b"https://evil.example/x".to_vec()), bytes(60)],
+        session in proptest::collection::vec(any::<u8>(), 1..60),
+        tamper in any::<bool>(),
+        seed in any::<u64>(),
+    ) {
+        prop_assume!(!matches!(method.as_slice(), b"GET" | b"HEAD" | b"OPTIONS"));
+        let c = csrf(8);
+        let b = Binding::new(&session);
+        let mut token = c.issue_at(&b, NOW, &mut SeedPads(seed)).unwrap().as_bytes().to_vec();
+        if tamper {
+            let last = token.len() - 1;
+            token[last] = if token[last] == b'A' { b'B' } else { b'A' };
+        }
+        let facts = RequestFacts::new(&method)
+            .fetch_site(&site)
+            .origin(&origin)
+            .referer(&referer)
+            .own_origin("https://example.com");
+        let split = c
+            .policy(&facts)
+            .and_then(|_| c.verify_at(&b, &token, NOW).map(|_| ()))
+            .map_err(|e| e.reason());
+        let whole = c.check_at(&facts, &b, &token, NOW).map(|_| ()).map_err(|e| e.reason());
+        prop_assert_eq!(split, whole);
+    }
+
     /// Without expiry a token passes at any later time a token can reach, is
     /// refused past that (a broken clock), and is still refused when issued
     /// further ahead than the skew.

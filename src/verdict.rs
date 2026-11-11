@@ -35,7 +35,9 @@ pub enum Reason {
     /// very old token, or tampering.
     UnknownKey,
     /// The MAC does not verify for this session (and scope): a forgery, or a
-    /// token from another session.
+    /// token from another session. Also a token checked against a binding
+    /// other than the one it was issued with, scope included: a scope left
+    /// out of the verifying binding reads as `BadMac`, not `WrongScope`.
     BadMac,
     /// The token was issued for the previous session id: the user signed in
     /// again in another tab. Benign, but never accepted.

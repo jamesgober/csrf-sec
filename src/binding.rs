@@ -55,7 +55,9 @@ impl<'a> Binding<'a> {
         }
     }
 
-    /// Also bind to `scope`, one action. An empty scope means no scope.
+    /// Also bind to `scope`, one action. An empty scope means no scope. The
+    /// verifying binding must name the same scope: a scoped token checked
+    /// without one fails as [`Reason::BadMac`](crate::Reason::BadMac).
     #[must_use]
     pub fn scope<S: AsRef<[u8]> + ?Sized>(mut self, scope: &'a S) -> Self {
         self.scope = scope.as_ref();
