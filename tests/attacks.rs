@@ -6,8 +6,7 @@
 use std::{collections::HashSet, time::Duration};
 
 use csrf_sec::{
-    Binding, Csrf, Error, FetchSite, KeyId, MethodClass, Mode, PadSource, Reason, RequestFacts,
-    TOKEN_LEN,
+    Binding, Csrf, Error, KeyId, MethodClass, Mode, RandomSource, Reason, RequestFacts, TOKEN_LEN,
 };
 
 const KEY: [u8; 32] = *b"attack test key, thirty-two byte";
@@ -16,7 +15,7 @@ const SITE: &str = "https://bank.example";
 
 struct Pads(u64);
 
-impl PadSource for Pads {
+impl RandomSource for Pads {
     fn fill(&mut self, out: &mut [u8]) -> Result<(), Error> {
         for b in out {
             self.0 ^= self.0 >> 12;
@@ -535,5 +534,4 @@ fn t15_cross_site_navigation_post_is_refused() {
             "{mode:?}"
         );
     }
-    assert_eq!(FetchSite::parse(b"cross-site"), Some(FetchSite::CrossSite));
 }

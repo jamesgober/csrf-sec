@@ -29,7 +29,7 @@
         <strong>MSRV is 1.85+</strong> (Rust 2024 edition). <code>#![forbid(unsafe_code)]</code>. <code>no_std</code> core (with <code>alloc</code>).
     </p>
     <blockquote>
-        <strong>Status: <code>0.9.4</code>, release candidate.</strong> Every feature is built, measured, attacked, checked against real browsers, and caught by mutation testing; three independent adversarial reviews found no way to forge a pass, every other finding is fixed, and the design is checked point by point against OWASP's CSRF guidance. <code>1.0</code> waits on the checklist in <a href="./dev/ROADMAP.md"><code>dev/ROADMAP.md</code></a>, the first real integration among it.
+        <strong>Status: <code>0.10.0</code>, release candidate.</strong> Every feature is built, measured, attacked, checked against real browsers, and caught by mutation testing; three independent adversarial reviews found no way to forge a pass, every other finding is fixed, and the design is checked point by point against OWASP's CSRF guidance. <code>1.0</code> waits on the checklist in <a href="./dev/ROADMAP.md"><code>dev/ROADMAP.md</code></a>, the first real integration among it.
     </blockquote>
 </div>
 
@@ -40,15 +40,17 @@
 
 ```toml
 [dependencies]
-csrf-sec = "0.9"
+csrf-sec = "0.10"
 ```
 
 ## Quick Start
 
 ```rust
+use std::collections::HashMap;
 use csrf_sec::{Csrf, Error, RequestFacts};
 
-// At startup, once: a persisted 32-byte key (never one generated at boot).
+// Once, ever: `Csrf::generate_key()?`, then store the key (a secrets manager, a vault).
+// At every start, with the stored key (never one generated at boot):
 fn protection(key: [u8; 32]) -> Result<Csrf, Error> {
     Csrf::new(key)
 }
@@ -59,11 +61,9 @@ fn form_token(csrf: &Csrf, session_id: &str) -> Result<String, Error> {
 }
 
 // Handling the POST: request policy and token. `false`: send a generic 403.
-fn allowed(csrf: &Csrf, session_id: &str, sec_fetch_site: &str, origin: &str, submitted: &str) -> bool {
-    let facts = RequestFacts::new("POST")
-        .fetch_site(sec_fetch_site)        // Sec-Fetch-Site header
-        .origin(origin)                    // Origin header
-        .own_origin("https://example.com");
+// `headers` holds the request's headers by lowercase name.
+fn allowed(csrf: &Csrf, session_id: &str, headers: &HashMap<&str, &str>, submitted: &str) -> bool {
+    let facts = RequestFacts::from_headers("POST", "https://example.com", |name| headers.get(name));
     csrf.check(&facts, session_id, submitted).is_ok()
 }
 ```

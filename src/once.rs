@@ -286,14 +286,14 @@ mod memory {
     ///
     /// ```
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
-    /// use csrf_sec::{Binding, Csrf, MemoryStore, OsPads, Reason};
+    /// use csrf_sec::{Binding, Csrf, MemoryStore, OsRandom, Reason};
     ///
     /// let csrf = Csrf::new(*b"an example key, 32 bytes long!!!")?;
     /// let started = 1_800_000_000; // MemoryStore::new reads the system clock
     /// let store = MemoryStore::starting_at(100_000, started);
     /// let pay = Binding::new("session-1").scope("POST /pay").once(&store);
     ///
-    /// let token = csrf.issue_at(&pay, started + 5, &mut OsPads)?;
+    /// let token = csrf.issue_at(&pay, started + 5, &mut OsRandom)?;
     /// csrf.verify_at(&pay, token.as_bytes(), started + 30)?;
     /// let again = csrf.verify_at(&pay, token.as_bytes(), started + 31);
     /// assert_eq!(again.unwrap_err().reason(), Reason::AlreadyUsed);

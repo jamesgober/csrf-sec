@@ -5,7 +5,7 @@ use std::{hint::black_box, sync::Mutex, time::Duration};
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use csrf_sec::{
-    Binding, Csrf, Error, KeyId, MemoryStore, NonceStore, NonceUse, OsPads, PadSource,
+    Binding, Csrf, Error, KeyId, MemoryStore, NonceStore, NonceUse, OsRandom, RandomSource,
     RequestFacts, StoreError,
 };
 
@@ -13,10 +13,10 @@ const NOW: u64 = 1_792_540_800;
 const SESSION: &str = "Q2xhc3NpY2FsIDQzLWNoYXJhY3RlciBzZXNzaW9uIGlk"; // 44 chars
 
 /// Deterministic pads, so issue benchmarks measure the token work and not the
-/// OS generator (`OsPads` is benchmarked separately).
+/// OS generator (`OsRandom` is benchmarked separately).
 struct FixedPads(u64);
 
-impl PadSource for FixedPads {
+impl RandomSource for FixedPads {
     #[inline]
     fn fill(&mut self, out: &mut [u8]) -> Result<(), Error> {
         for b in out {
@@ -64,7 +64,7 @@ fn tokens(c: &mut Criterion) {
         let mut pads = FixedPads(7);
         b.iter(|| csrf.issue_at(black_box(&binding), black_box(NOW), &mut pads))
     });
-    group.bench_function("issue (system clock, OsPads)", |b| {
+    group.bench_function("issue (system clock, OsRandom)", |b| {
         b.iter(|| csrf.issue(black_box(SESSION)))
     });
     group.bench_function("verify_at", |b| {
@@ -241,9 +241,9 @@ fn one_time(c: &mut Criterion) {
 
 fn randomness(c: &mut Criterion) {
     let mut group = c.benchmark_group("pads");
-    group.bench_function("OsPads 22 bytes", |b| {
+    group.bench_function("OsRandom 22 bytes", |b| {
         let mut pad = [0u8; 22];
-        b.iter(|| OsPads.fill(black_box(&mut pad)))
+        b.iter(|| OsRandom.fill(black_box(&mut pad)))
     });
     group.finish();
 }

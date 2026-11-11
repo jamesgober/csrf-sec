@@ -13,6 +13,49 @@
 
 ---
 
+## [0.10.0] - 2026-11-11
+
+A simplicity pass over the public API before 1.0: the common uses each take
+one line, names say what they are, and each thing has one way to do it.
+Nothing about tokens, the policy, or their security changes; tokens issued
+by 0.9 verify unchanged.
+
+### Added
+
+- `RequestFacts::from_headers(method, own_origin, lookup)`: a request's
+  facts in one call from a header lookup, asked for `sec-fetch-site`,
+  `origin`, and `referer`. The short examples used to build them by hand
+  and left out `Referer`, the fallback for browsers without Fetch Metadata.
+- `Csrf::generate_key()` (feature `std`): a new key from the operating
+  system's generator, to call once and store. Applications reached for the
+  token-mask generator to make one.
+
+### Changed
+
+- `PadSource` is now `RandomSource`, and `OsPads` is now `OsRandom`: the
+  same trait and type, named for what they supply. `issue_at`'s last
+  parameter is `random`.
+
+### Removed
+
+- `RequestFacts::with_class`: a second constructor nothing used;
+  `RequestFacts::new(method)` classifies the method.
+- `FetchSite` from the public API: no public signature took or returned
+  it. Pass the header value to `from_headers` or `RequestFacts::fetch_site`.
+- `Token::len` and `Token::is_empty`: `Token` dereferences to `str`, so
+  `token.len()` still works unchanged.
+
+### Upgrading from 0.9
+
+- Rename `PadSource` to `RandomSource` and `OsPads` to `OsRandom` (imports
+  and uses). Implementations of the trait keep the same `fill` method.
+- `RequestFacts::with_class(MethodClass::classify(m))` becomes
+  `RequestFacts::new(m)`.
+- Code that named `FetchSite` passes the raw header value instead.
+- Optional: replace a chain of `RequestFacts` setters with
+  `RequestFacts::from_headers`, and a key made with the randomness trait
+  with `Csrf::generate_key()`.
+
 ## [0.9.4] - 2026-11-11
 
 The first integration (web-net's CSRF step and gatekeeper-io's login check
@@ -452,7 +495,8 @@ The scaffold and the plan. No functional code yet.
   keys and rotation, verdicts, threats T1-T15, architecture, ecosystem, open
   decisions, decision log), `dev/DIRECTIVES.md`, and `dev/ROADMAP.md`.
 
-[Unreleased]: https://github.com/jamesgober/csrf-sec/compare/v0.9.4...HEAD
+[Unreleased]: https://github.com/jamesgober/csrf-sec/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/jamesgober/csrf-sec/compare/v0.9.4...v0.10.0
 [0.9.4]: https://github.com/jamesgober/csrf-sec/compare/v0.9.3...v0.9.4
 [0.9.3]: https://github.com/jamesgober/csrf-sec/compare/v0.9.2...v0.9.3
 [0.9.2]: https://github.com/jamesgober/csrf-sec/compare/v0.9.1...v0.9.2

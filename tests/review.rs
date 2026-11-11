@@ -7,7 +7,7 @@
 use std::time::Duration;
 
 use csrf_sec::{
-    Binding, Csrf, Error, KeyId, MemoryStore, Mode, NonceStore, NonceUse, PadSource, Reason,
+    Binding, Csrf, Error, KeyId, MemoryStore, Mode, NonceStore, NonceUse, RandomSource, Reason,
     RequestFacts, StoreError,
 };
 
@@ -16,7 +16,7 @@ const NOW: u64 = 1_792_540_800;
 
 struct Pads(u64);
 
-impl PadSource for Pads {
+impl RandomSource for Pads {
     fn fill(&mut self, out: &mut [u8]) -> Result<(), Error> {
         for b in out {
             self.0 = self

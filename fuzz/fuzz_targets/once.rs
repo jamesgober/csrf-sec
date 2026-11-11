@@ -6,14 +6,14 @@
 
 use std::collections::HashSet;
 
-use csrf_sec::{Binding, Csrf, Error, MemoryStore, PadSource, Reason, Token};
+use csrf_sec::{Binding, Csrf, Error, MemoryStore, RandomSource, Reason, Token};
 use libfuzzer_sys::fuzz_target;
 
 const NOW: u64 = 1_792_540_800;
 
 struct Pads(u64);
 
-impl PadSource for Pads {
+impl RandomSource for Pads {
     fn fill(&mut self, out: &mut [u8]) -> Result<(), Error> {
         for b in out {
             self.0 = self.0.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);

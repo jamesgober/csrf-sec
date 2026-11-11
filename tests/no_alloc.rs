@@ -12,7 +12,8 @@ use std::{
 use std::sync::Mutex;
 
 use csrf_sec::{
-    Binding, Csrf, Error, KeyId, NonceStore, NonceUse, PadSource, Reason, RequestFacts, StoreError,
+    Binding, Csrf, Error, KeyId, NonceStore, NonceUse, RandomSource, Reason, RequestFacts,
+    StoreError,
 };
 
 struct Counting;
@@ -54,7 +55,7 @@ fn allocations_during(f: impl FnOnce()) -> usize {
 
 struct FixedPads;
 
-impl PadSource for FixedPads {
+impl RandomSource for FixedPads {
     fn fill(&mut self, out: &mut [u8]) -> Result<(), Error> {
         out.iter_mut()
             .enumerate()
@@ -172,7 +173,7 @@ fn test_hot_paths_allocate_nothing() {
         assert!(csrf.check_with(&facts, &binding, &t).is_ok());
     });
     #[cfg(feature = "std")]
-    assert_eq!(n, 0, "Tier 2 with the system clock and OsPads");
+    assert_eq!(n, 0, "Tier 2 with the system clock and OsRandom");
 
     every_reason_allocates_nothing(&csrf, &binding, session);
 }

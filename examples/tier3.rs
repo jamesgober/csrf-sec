@@ -6,7 +6,7 @@
 //!
 //! Run with `cargo run --example tier3` (or add `--no-default-features`).
 
-use csrf_sec::{Binding, Csrf, Error, KeyId, PadSource, Reason, RequestFacts};
+use csrf_sec::{Binding, Csrf, Error, KeyId, RandomSource, Reason, RequestFacts};
 
 /// Stand-in for a platform CSPRNG (a hardware generator on an embedded
 /// target, an OS call elsewhere). This one is a fixed sequence so the example
@@ -14,7 +14,7 @@ use csrf_sec::{Binding, Csrf, Error, KeyId, PadSource, Reason, RequestFacts};
 /// predictable pad lets a compression attack recover the token.
 struct DemoRng(u64);
 
-impl PadSource for DemoRng {
+impl RandomSource for DemoRng {
     fn fill(&mut self, out: &mut [u8]) -> Result<(), Error> {
         for b in out {
             self.0 = self

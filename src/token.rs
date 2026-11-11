@@ -22,7 +22,7 @@ use crate::{
     error::Error,
     key::{KeyRole, Kind, Ring, Slot},
     once::{NONCE_LEN, ONCE_TOKEN_LEN},
-    pad::PadSource,
+    pad::RandomSource,
     verdict::{Reason, Rejected, Verdict, Verified},
 };
 
@@ -133,21 +133,6 @@ impl Token {
     #[inline]
     pub fn as_bytes(&self) -> &[u8] {
         &self.buf[..usize::from(self.len)]
-    }
-
-    /// Length of the text in characters: [`TOKEN_LEN`] for session tokens,
-    /// [`ONCE_TOKEN_LEN`](crate::ONCE_TOKEN_LEN) for one-time tokens.
-    #[must_use]
-    #[inline]
-    pub fn len(&self) -> usize {
-        usize::from(self.len)
-    }
-
-    /// Always `false`: an issued token is never empty.
-    #[must_use]
-    #[inline]
-    pub fn is_empty(&self) -> bool {
-        self.len == 0
     }
 }
 
@@ -323,7 +308,7 @@ fn ct_eq16(expected: &[u8; TAG_LEN], received: &[u8]) -> bool {
 ///
 /// `extra` is written into the header after the issued-at field (the nonce of
 /// a one-time token; empty otherwise).
-pub(crate) fn issue<P: PadSource + ?Sized>(
+pub(crate) fn issue<P: RandomSource + ?Sized>(
     layout: Layout,
     slot: &Slot,
     binding: &Binding<'_>,
@@ -499,10 +484,10 @@ mod tests {
     #[cfg(feature = "std")]
     #[test]
     fn test_token_views_agree() {
-        use crate::{Binding, Csrf, OsPads};
+        use crate::{Binding, Csrf, OsRandom};
         let c = Csrf::new(*b"token view tests, thirty-two by!").unwrap();
         let t = c
-            .issue_at(&Binding::new("s"), EPOCH + 100, &mut OsPads)
+            .issue_at(&Binding::new("s"), EPOCH + 100, &mut OsRandom)
             .unwrap();
         let s: &str = &t;
         assert_eq!(s.len(), 59);

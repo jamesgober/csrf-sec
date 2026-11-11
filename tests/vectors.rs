@@ -8,12 +8,12 @@
 //! drift together unnoticed. `docs/TEST_VECTORS.md` lists the same vectors
 //! for other implementations.
 
-use csrf_sec::{Binding, Csrf, Error, KeyId, NonceStore, NonceUse, PadSource, StoreError};
+use csrf_sec::{Binding, Csrf, Error, KeyId, NonceStore, NonceUse, RandomSource, StoreError};
 
 /// Pad bytes 0, 1, 2, ... (wrapping), continuing across calls.
 struct CountingPads(u8);
 
-impl PadSource for CountingPads {
+impl RandomSource for CountingPads {
     fn fill(&mut self, out: &mut [u8]) -> Result<(), Error> {
         for b in out {
             *b = self.0;

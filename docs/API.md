@@ -16,7 +16,7 @@
 
 A task-oriented tour of the API, Tier 1 first. The rustdoc on [docs.rs](https://docs.rs/csrf-sec) is the item-by-item reference. Every `rust` example in this file is compiled and run as a doctest, so it matches the build; lines starting with `#` are setup hidden in rustdoc.
 
-> **Status: `0.9.4`, release candidate.** The API on this page is the 1.0 candidate; `1.0` will freeze it (additions only until `2.0`) and the token format, on the terms in the README. Every cost below is a measurement from [`PERFORMANCE.md`](./PERFORMANCE.md) (Linux, Ryzen 9 9950X3D) unless marked as an estimate.
+> **Status: `0.10.0`, release candidate.** The API on this page is the 1.0 candidate; `1.0` will freeze it (additions only until `2.0`) and the token format, on the terms in the README. Every cost below is a measurement from [`PERFORMANCE.md`](./PERFORMANCE.md) (Linux, Ryzen 9 9950X3D) unless marked as an estimate.
 
 - [Setup](#setup)
 - [Tier 1: three calls](#tier-1-three-calls)
@@ -42,7 +42,7 @@ A task-oriented tour of the API, Tier 1 first. The rustdoc on [docs.rs](https://
 
 ```toml
 [dependencies]
-csrf-sec = "0.9"
+csrf-sec = "0.10"
 ```
 
 `csrf-sec` has one job: decide whether a state-changing request came from your own page, for this session.
@@ -54,10 +54,11 @@ Examples here use readable literal keys such as `*b"an example key, 32 bytes lon
 ```rust
 use csrf_sec::{Csrf, RequestFacts};
 # fn main() -> Result<(), Box<dyn std::error::Error>> {
-# let key = *b"an example key, 32 bytes long!!!";
+# let key = Csrf::generate_key()?;
 # let session_id = "session-1";
+# let headers = std::collections::HashMap::from([("sec-fetch-site", "same-origin")]);
 
-let csrf = Csrf::new(key)?;                     // key: [u8; 32], persisted (see Keys)
+let csrf = Csrf::new(key)?;                     // key: [u8; 32], stored (from Csrf::generate_key, once)
 
 // Rendering a page with a form:
 let token = csrf.issue(session_id)?;            // 59 characters, different on every call
@@ -67,10 +68,7 @@ let token = csrf.issue(session_id)?;            // 59 characters, different on e
 csrf.verify(session_id, submitted)?;
 
 // Handling the POST (recommended: request policy and token):
-let facts = RequestFacts::new("POST")
-    .fetch_site("same-origin")
-    .origin("https://example.com")
-    .own_origin("https://example.com");
+let facts = RequestFacts::from_headers("POST", "https://example.com", |name| headers.get(name));
 csrf.check(&facts, session_id, submitted)?;
 # Ok(())
 # }
@@ -78,12 +76,14 @@ csrf.check(&facts, session_id, submitted)?;
 
 | Call | Returns | Cost (measured) |
 |---|---|---|
-| `Csrf::new(key)` | `Result<Csrf, Error>` | 212 ns, once |
+| `Csrf::generate_key()` | `Result<[u8; 32], Error>` | once, ever: store the key |
+| `Csrf::new(key)` | `Result<Csrf, Error>` | 212 ns, once per process |
+| `RequestFacts::from_headers(method, own_origin, lookup)` | `RequestFacts` | reads `Sec-Fetch-Site`, `Origin`, `Referer` |
 | `csrf.issue(session)` | `Result<Token, Error>` | 167 ns; no allocation |
 | `csrf.verify(session, token)` | `Verdict` = `Result<Verified, Rejected>` | 142 ns; no allocation, no lock |
 | `csrf.check(&facts, session, token)` | `Verdict` | 150 ns (`_at`, `Origin` + token); a cross-site refusal 23 ns |
 
-Tier 1 calls include a system clock read (and `issue` a pad from `OsPads`); the `_at` calls are 30 to 55 ns faster (`verify_at` 110 ns against 142 ns, `issue_at` 112 ns against 167 ns). "No allocation" is also measured: a counting-allocator test (`tests/no_alloc.rs`) runs issue, verify, check, and every rejection path and asserts zero allocations, on Linux, macOS, and Windows.
+Tier 1 calls include a system clock read (and `issue` a pad from `OsRandom`); the `_at` calls are 30 to 55 ns faster (`verify_at` 110 ns against 142 ns, `issue_at` 112 ns against 167 ns). "No allocation" is also measured: a counting-allocator test (`tests/no_alloc.rs`) runs issue, verify, check, and every rejection path and asserts zero allocations, on Linux, macOS, and Windows.
 
 `session` and `token` accept anything that is `AsRef<[u8]>`: `&str`, `String`, `&[u8]`, `Vec<u8>`, or a `&Token`. An empty token is reported as `Reason::Missing`; an empty session id can never verify a token (`Reason::Unverifiable`), because a token bound to nothing protects nothing. (Safe methods, and `PolicyOnly` mode without a one-time binding, do not look at the session id.)
 
@@ -97,10 +97,9 @@ pub struct Token { /* inline buffer, no heap */ }
 impl Token {
     pub fn as_str(&self) -> &str;
     pub fn as_bytes(&self) -> &[u8];
-    pub fn len(&self) -> usize;          // TOKEN_LEN (59) or ONCE_TOKEN_LEN (102)
-    pub fn is_empty(&self) -> bool;      // always false
 }
-// Deref<Target = str>, AsRef<str>, AsRef<[u8]>, Display (the token text),
+// Deref<Target = str> (so `len()` is TOKEN_LEN (59) or ONCE_TOKEN_LEN (102)),
+// AsRef<str>, AsRef<[u8]>, Display (the token text),
 // Debug (redacted), Clone, From<Token> for String (feature `alloc`).
 ```
 
@@ -185,8 +184,9 @@ Cost of a scope or previous session: only failing tokens pay for the extra MACs 
 pub struct RequestFacts<'a> { /* borrowed */ }
 
 impl<'a> RequestFacts<'a> {
-    pub fn new<M: AsRef<[u8]> + ?Sized>(method: &M) -> Self;          // classifies the method
-    pub const fn with_class(class: MethodClass) -> Self;
+    pub fn from_headers<M, O, V, F>(method: &M, own_origin: &'a O, header: F) -> Self
+    where F: FnMut(&str) -> Option<&'a V>;                               // one call: asks for sec-fetch-site, origin, referer
+    pub fn new<M: AsRef<[u8]> + ?Sized>(method: &M) -> Self;          // classifies the method; fill in the rest:
     pub fn fetch_site<V: AsRef<[u8]> + ?Sized>(self, value: &V) -> Self;     // Sec-Fetch-Site
     pub fn origin<V: AsRef<[u8]> + ?Sized>(self, value: &'a V) -> Self;      // Origin
     pub fn referer<V: AsRef<[u8]> + ?Sized>(self, value: &'a V) -> Self;     // Referer (full URL)
@@ -198,12 +198,9 @@ impl<'a> RequestFacts<'a> {
 pub enum MethodClass { Safe, Unsafe }
 impl MethodClass { pub const fn classify(method: &[u8]) -> MethodClass; }
 
-#[non_exhaustive]
-pub enum FetchSite { SameOrigin, SameSite, CrossSite, None }
-impl FetchSite { pub fn parse(value: &[u8]) -> Option<FetchSite>; }
 ```
 
-The adapter fills only what the request carried. Values are raw header bytes; nothing needs to be decoded first. An empty value counts as absent.
+`from_headers` covers the common case: it asks the lookup for each header by its lowercase name (HTTP names are case-insensitive, so the lookup should be too), and `None` means the request did not carry it. Without a lookup function, `new` and the setters do the same, one header at a time. The adapter fills only what the request carried. Values are raw header bytes; nothing needs to be decoded first. An empty value counts as absent.
 
 - Methods are classified case-sensitively: exactly `GET`, `HEAD`, and `OPTIONS` are safe; everything else, including `get`, `TRACE`, and unknown methods, is unsafe. A handler that changes state must be reached only through an unsafe method (T13); csrf-sec cannot see your routes, so this is your router's contract.
 - `Sec-Fetch-Site` values other than the four defined ones are treated as absent, never as same-origin. Surrounding spaces and tabs are ignored.
@@ -331,7 +328,7 @@ let csrf = Csrf::builder()
   # Ok(())
   # }
   ```
-- **Keys are 32 bytes and must be persisted** (or derived from a persisted master, for example a key-vault secret through HKDF). A key generated at boot makes every open form fail after a restart. Keys whose bytes are all equal (an unset buffer) are refused.
+- **Keys are 32 bytes and must be persisted** (or derived from a persisted master, for example a key-vault secret through HKDF). A key generated at boot makes every open form fail after a restart. `Csrf::generate_key()` (feature `std`) makes one from the operating system's generator: call it once, store the result, and load it at every start. Keys whose bytes are all equal (an unset buffer) are refused.
 - csrf-sec never MACs with your key directly: it derives one subkey per key id and token kind (session and one-time) at construction, keeps only those, and wipes them when the `Csrf` is dropped. The key bytes handed to the builder are wiped when the builder is dropped, and the builder's key buffer is reserved for `MAX_KEYS` up front and never grows, so no reallocation leaves a heap copy behind. (Copies a move leaves on the stack, as with any Rust value, are out of reach of safe code.)
 - **Rotation on one node:** `csrf.rotated(KeyId(4), new_key)?` returns a new `Csrf` that signs with key 4 and keeps the old signing key as retired for one token lifetime (or the one-time lifetime, if longer) plus skew from now, through the last second of the last token it could have signed. Swap it in; nobody is logged out and no open form fails. (With `no_expiry`, forms older than that fail as `unknown_key` and must be reloaded: rotation is what ends their tokens.) `rotated` reads the clock to set the retire time, and refuses with `Error::Clock` when the clock is outside 2020 to 2156; for an emergency rotation on a host whose clock is broken, build a new `Csrf` with the builder instead (`.key(new_id, new_key)`, leaving the compromised key out).
 - **Rotation across a cluster, in two steps:** first deploy the new key everywhere with `.accept(id, key)` (verify only); once every node has it, make it the signing key with `.key(id, key)` and move the old one to `.retired(..)`. A node never receives a token signed with a key it does not know. On a node built with the accepted key, `rotated(id, same_key)` promotes it.
@@ -479,22 +476,22 @@ Cost: one store call on a verify whose MAC passed, plus the normal verify; none 
 
 ## Tier 3: explicit time and randomness
 
-The core works without `std` (it needs `alloc`). Time is passed in as unix seconds, and randomness comes from a `PadSource` you supply:
+The core works without `std` (it needs `alloc`). Time is passed in as unix seconds, and randomness comes from a `RandomSource` you supply:
 
 ```rust,ignore
-pub trait PadSource {
+pub trait RandomSource {
     fn fill(&mut self, out: &mut [u8]) -> Result<(), Error>;
 }
 
-impl<P: PadSource + ?Sized> PadSource for &mut P { /* forwards */ }
+impl<P: RandomSource + ?Sized> RandomSource for &mut P { /* forwards */ }
 
-pub struct OsPads;      // feature `std`: per-thread buffer refilled in bulk from the OS CSPRNG
-impl OsPads {
+pub struct OsRandom;      // feature `std`: per-thread buffer refilled in bulk from the OS CSPRNG
+impl OsRandom {
     pub fn refill() -> Result<(), Error>;   // discard this thread's buffered bytes and refill from the OS
 }
 
 impl Csrf {
-    pub fn issue_at<P: PadSource + ?Sized>(&self, binding: &Binding<'_>, now: u64, pads: &mut P) -> Result<Token, Error>;
+    pub fn issue_at<P: RandomSource + ?Sized>(&self, binding: &Binding<'_>, now: u64, random: &mut P) -> Result<Token, Error>;
     pub fn verify_at(&self, binding: &Binding<'_>, token: &[u8], now: u64) -> Verdict;
     pub fn check_at(&self, facts: &RequestFacts<'_>, binding: &Binding<'_>, token: &[u8], now: u64) -> Verdict;
     pub fn policy(&self, facts: &RequestFacts<'_>) -> Result<OriginCheck, Rejected>;
@@ -502,12 +499,12 @@ impl Csrf {
 ```
 
 ```rust
-# use csrf_sec::{Binding, Csrf, OsPads, Reason};
+# use csrf_sec::{Binding, Csrf, OsRandom, Reason};
 # fn main() -> Result<(), Box<dyn std::error::Error>> {
 # let csrf = Csrf::new(*b"an example key, 32 bytes long!!!")?;
 let now = 1_800_000_000; // unix seconds, from your clock
 let binding = Binding::new("session-1");
-let token = csrf.issue_at(&binding, now, &mut OsPads)?;
+let token = csrf.issue_at(&binding, now, &mut OsRandom)?;
 csrf.verify_at(&binding, token.as_bytes(), now + 60)?;
 
 let much_later = now + 13 * 3600;          // past the 12-hour default lifetime
@@ -517,9 +514,9 @@ assert_eq!(refused.reason(), Reason::Expired);
 # }
 ```
 
-A `PadSource` must be a cryptographically secure generator. The pad travels with the token, but it must not be predictable before the response is built: a predictable pad lets a compression attack recover the token again. Tier 1 and Tier 2 use `OsPads` and the system clock.
+A `RandomSource` must be a cryptographically secure generator. The pad travels with the token, but it must not be predictable before the response is built: a predictable pad lets a compression attack recover the token again. Tier 1 and Tier 2 use `OsRandom` and the system clock.
 
-`OsPads` keeps a 2 KiB buffer per thread, refilled in bulk from the OS generator through `mod-rand` (about 90 pads per system call), takes no lock, and wipes the buffer when the thread exits. A 22-byte pad costs 28 ns on Linux (measured; the kernel generator's throughput is the floor) and about 8 ns on Windows. After a `fork` without `exec`, parent and child would share the unused part of the buffer; `OsPads::refill()` discards it.
+`OsRandom` keeps a 2 KiB buffer per thread, refilled in bulk from the OS generator through `mod-rand` (about 90 pads per system call), takes no lock, and wipes the buffer when the thread exits. A 22-byte pad costs 28 ns on Linux (measured; the kernel generator's throughput is the floor) and about 8 ns on Windows. After a `fork` without `exec`, parent and child would share the unused part of the buffer; `OsRandom::refill()` discards it.
 
 ## Verdicts and reasons
 
@@ -634,15 +631,12 @@ An adapter is the few lines that connect csrf-sec to your HTTP stack. `examples/
 # use csrf_sec::{Csrf, RequestFacts};
 # fn main() -> Result<(), Box<dyn std::error::Error>> {
 # let csrf = Csrf::new(*b"an example key, 32 bytes long!!!")?;
-# let header = |name: &str| match name { "sec-fetch-site" => "same-origin", "origin" => "https://example.com", _ => "" };
+# let header = |name: &str| match name { "sec-fetch-site" => Some("same-origin"), "origin" => Some("https://example.com"), _ => None };
 # let (method, session_id) = ("POST", "session-1");
 # let token = csrf.issue(session_id)?;
 # let form_field = token.as_str();
-let facts = RequestFacts::new(method)
-    .fetch_site(header("sec-fetch-site"))
-    .origin(header("origin"))
-    .referer(header("referer"))
-    .own_origin("https://example.com");
+// `header` looks a request header up by its lowercase name, case-insensitively.
+let facts = RequestFacts::from_headers(method, "https://example.com", header);
 
 match csrf.check(&facts, session_id, form_field) {
     Ok(_) => { /* run the handler */ }
@@ -683,11 +677,11 @@ match csrf.check(&facts, session_id, form_field) {
 An API or site without sessions can still bind tokens to the browser: set a random, `__Host-` prefixed cookie once (at least 128 bits from a CSPRNG), and use its value as the session id. This is the signed double-submit pattern, with the cookie value inside the MAC instead of compared to the token. The `__Host-` prefix is required, not optional: it is what stops a sibling subdomain from planting a cookie value of the attacker's choosing, for which the attacker could fetch a valid token. In `Strict` mode the request policy refuses the cross-site post as well; in `TokenOnly` mode the prefix is the only defence against a planted cookie.
 
 ```rust
-# use csrf_sec::{Csrf, OsPads, PadSource};
+# use csrf_sec::{Csrf, OsRandom, RandomSource};
 # fn main() -> Result<(), Box<dyn std::error::Error>> {
 # let csrf = Csrf::new(*b"an example key, 32 bytes long!!!")?;
 let mut seed = [0u8; 32];
-OsPads.fill(&mut seed)?;                                  // any CSPRNG works
+OsRandom.fill(&mut seed)?;                                  // any CSPRNG works
 let cookie_value: String = seed.iter().map(|b| format!("{b:02x}")).collect();
 // Set-Cookie: __Host-csrf=<cookie_value>; Secure; HttpOnly; SameSite=Lax; Path=/
 
@@ -773,7 +767,7 @@ Log `reason().as_str()` and `severity()` on every refusal, and `key_id()` on pas
 
 | Feature | Default | Adds |
 |---|---|---|
-| `std` | yes | Tier 1 and Tier 2 calls (system clock, `OsPads`), `rotated`, `accepts`, `MemoryStore`; implies `alloc` |
+| `std` | yes | Tier 1 and Tier 2 calls (system clock, `OsRandom`), `rotated`, `accepts`, `MemoryStore`; implies `alloc` |
 | `alloc` | via `std` | `From<Token> for String` |
 
 With `default-features = false` the crate is `no_std` and needs an allocator (crypt-io does); the `_at` calls, `policy`, `rotated_at`, `accepts_at`, `keys`, and `key_fingerprint` are available, and the verify path still allocates nothing. CI builds this configuration for `thumbv7em-none-eabi`, a target with no standard library at all; `examples/tier3.rs` shows the surface.
@@ -804,7 +798,7 @@ Unchanged since 0.4 (version 2 was added then); `1.0` freezes it for the 1.x lin
 
  masked:     pad (len raw) | raw XOR pad           pad: fresh CSPRNG bytes per issue
  text:       base64url, no padding, canonical      59 or 102 characters
- one-time:   the nonce is drawn from the PadSource before the pad
+ one-time:   the nonce is drawn from the RandomSource before the pad
 ```
 
 Lengths are LEB128 varints, so the encoding is canonical for any length and short inputs (a 43-character session id with no scope) fit in one 64-byte BLAKE3 block. Decoding is constant time and accepts only canonical text: any change to any character of a token makes it fail. `tests/tokens.rs` and `tests/once.rs` rebuild both formats from this description with crypt-io directly and compare them byte for byte with what the crate issues. Fixed vectors for both layouts are in [`TEST_VECTORS.md`](./TEST_VECTORS.md), and an independent implementation in Python, with its own BLAKE3, rebuilds them in CI.

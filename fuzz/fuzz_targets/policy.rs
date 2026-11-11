@@ -1,11 +1,26 @@
 //! Arbitrary request facts and allowlists: the policy never panics, safe
 //! methods always pass, and a request the browser calls cross-site passes
-//! only on an allowlisted origin.
+//! only on an allowlisted origin. `RequestFacts::from_headers` decides
+//! exactly as the setters do.
 
 #![no_main]
 
 use csrf_sec::{Csrf, KeyId, MethodClass, OriginCheck, RequestFacts};
 use libfuzzer_sys::fuzz_target;
+
+/// What the browser declared in `Sec-Fetch-Site`, parsed here independently
+/// of the crate: the four defined values, surrounding spaces and tabs (byte
+/// 9) ignored; anything else declares nothing.
+fn declared(site: &[u8]) -> Option<&[u8]> {
+    let mut v = site;
+    while let [b' ' | 9, rest @ ..] = v {
+        v = rest;
+    }
+    while let [rest @ .., b' ' | 9] = v {
+        v = rest;
+    }
+    matches!(v, b"same-origin" | b"same-site" | b"cross-site" | b"none").then_some(v)
+}
 
 fuzz_target!(|data: &[u8]| {
     // Six fields separated by 0xff: method, Sec-Fetch-Site, Origin, Referer,
@@ -30,12 +45,20 @@ fuzz_target!(|data: &[u8]| {
         .own_origin(own);
     let decision = csrf.policy(&facts);
 
+    let quick = RequestFacts::from_headers(method, own, |name| match name {
+        "sec-fetch-site" => Some(site),
+        "origin" => Some(origin),
+        "referer" => Some(referer),
+        _ => None,
+    });
+    assert_eq!(csrf.policy(&quick), decision, "from_headers differs from the setters");
+
     if MethodClass::classify(method) == MethodClass::Safe {
         assert_eq!(decision, Ok(OriginCheck::SafeMethod));
         return;
     }
-    let declared = csrf_sec::FetchSite::parse(site);
-    if matches!(declared, Some(csrf_sec::FetchSite::CrossSite)) && decision.is_ok() {
+    let declared = declared(site);
+    if declared == Some(&b"cross-site"[..]) && decision.is_ok() {
         // Only an allowlisted Origin can pass a cross-site request.
         let entry = allow_text.unwrap_or("");
         assert!(!entry.is_empty() && !origin.is_empty(), "cross-site passed without an allowlist");
