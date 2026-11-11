@@ -13,6 +13,26 @@
 
 ---
 
+## [0.9.4] - 2026-11-11
+
+The first integration (web-net's CSRF step and gatekeeper-io's login check
+on one request) showed two things the adapter guide did not say.
+
+### Added
+
+- A property test: for an unsafe method and a plain binding, `policy` then
+  `verify` gives exactly what `check` gives in `Strict`, the split an
+  adapter uses when the token is in a body it reads after the origin check.
+
+### Fixed
+
+- Documentation: a token issued with a scope and checked against a binding
+  without one fails as `bad_mac`, which reads as a forgery; two layers that
+  check the same request must use the same binding, scope included. The
+  `policy`-then-`verify` split is documented as supported.
+
+---
+
 ## [0.9.3] - 2026-11-08
 
 A polish release: no change to what the crate does. Cluster tests for
@@ -432,7 +452,8 @@ The scaffold and the plan. No functional code yet.
   keys and rotation, verdicts, threats T1-T15, architecture, ecosystem, open
   decisions, decision log), `dev/DIRECTIVES.md`, and `dev/ROADMAP.md`.
 
-[Unreleased]: https://github.com/jamesgober/csrf-sec/compare/v0.9.3...HEAD
+[Unreleased]: https://github.com/jamesgober/csrf-sec/compare/v0.9.4...HEAD
+[0.9.4]: https://github.com/jamesgober/csrf-sec/compare/v0.9.3...v0.9.4
 [0.9.3]: https://github.com/jamesgober/csrf-sec/compare/v0.9.2...v0.9.3
 [0.9.2]: https://github.com/jamesgober/csrf-sec/compare/v0.9.1...v0.9.2
 [0.9.1]: https://github.com/jamesgober/csrf-sec/compare/v0.9.0...v0.9.1

@@ -16,7 +16,7 @@
 
 A task-oriented tour of the API, Tier 1 first. The rustdoc on [docs.rs](https://docs.rs/csrf-sec) is the item-by-item reference. Every `rust` example in this file is compiled and run as a doctest, so it matches the build; lines starting with `#` are setup hidden in rustdoc.
 
-> **Status: `0.9.3`, release candidate.** The API on this page is the 1.0 candidate; `1.0` will freeze it (additions only until `2.0`) and the token format, on the terms in the README. Every cost below is a measurement from [`PERFORMANCE.md`](./PERFORMANCE.md) (Linux, Ryzen 9 9950X3D) unless marked as an estimate.
+> **Status: `0.9.4`, release candidate.** The API on this page is the 1.0 candidate; `1.0` will freeze it (additions only until `2.0`) and the token format, on the terms in the README. Every cost below is a measurement from [`PERFORMANCE.md`](./PERFORMANCE.md) (Linux, Ryzen 9 9950X3D) unless marked as an estimate.
 
 - [Setup](#setup)
 - [Tier 1: three calls](#tier-1-three-calls)
@@ -159,7 +159,7 @@ impl Csrf {
   # }
   ```
 
-  A token issued without a scope and presented to a scoped binding fails as `WrongScope`. A token issued for a different scope fails as `BadMac`: its scope is inside the MAC, so it cannot be told apart from a forgery.
+  A token issued without a scope and presented to a scoped binding fails as `WrongScope`. A token issued for a different scope fails as `BadMac`: its scope is inside the MAC, so it cannot be told apart from a forgery. So does a token issued **with** a scope and checked against a binding **without** one: the scope is never written into the token, so a verifier that leaves it out cannot know there was one.
 - **Previous session.** Your session layer rotates the session id at login. Tabs opened before the login still hold tokens for the old id; pass it here for the short window your gates keep it, and those tokens fail as `StaleSession` (benign, severity 1) instead of `BadMac` (forgery, severity 40). A token bound to the previous session never passes.
 
   ```rust
@@ -552,7 +552,7 @@ impl Reason {
 | `Missing` | `missing` | a client bug, or a forged form without a token | 5 |
 | `Malformed` | `malformed` | tampering or truncation | 10 |
 | `UnknownKey` | `unknown_key` | a very old token, or tampering | 5 |
-| `BadMac` | `bad_mac` | forgery | 40 |
+| `BadMac` | `bad_mac` | forgery, or a binding unlike the one the token was issued for (another session; a scope left out or different) | 40 |
 | `StaleSession` | `stale_session` | the user signed in again in another tab | 1 |
 | `Expired` | `expired` | an old tab | 1 |
 | `NotYetValid` | `not_yet_valid` | a node clock ahead by more than the skew | 5 |
@@ -659,7 +659,9 @@ match csrf.check(&facts, session_id, form_field) {
 
 - Call `check` on every route reachable by an unsafe method, including login and logout. Never let a `GET` change state: csrf-sec passes safe methods by design.
 - If your framework supports method overrides (`X-HTTP-Method-Override`, a `_method` field), pass the effective method after the override, and never allow an override that turns a safe method into an unsafe one: a `GET` overridden to `DELETE` would otherwise reach the handler as a request csrf-sec passed as safe.
-- Use `check`, not `policy`, as the gate: `policy` returns `Ok(NoFacts)` for a request that carried nothing to judge.
+- Use `check`, not `policy` alone, as the gate: `policy` returns `Ok(NoFacts)` for a request that carried nothing to judge.
+- If the token is in a body you read only after the origin check, run `policy` first, read the body, then `verify` with the token. For an unsafe method and a plain binding this gives exactly what `check` gives in `Strict` (a property test holds it to that); a one-time binding still needs `check` on safe methods too.
+- When two layers check the same request (a framework's CSRF step and a gate's own login check, say), they must use the same binding, scope included. A token issued with a scope and checked without one fails as `bad_mac`, which reads as a forgery. Either issue the token with the binding the outer layer uses, or leave the route out of the outer check and let the inner one own it.
 - Issue a new token after login (the session id changes), and pass the old session id as `previous_session` for the short window your session layer keeps it.
 - Pages that carry a token must never be stored in a shared cache: send `Cache-Control: private, no-store` (or at least `private`). A cached page served to someone else hands them a token for the first user's session.
 - Never put a token in a URL. Query strings end up in logs, browser history, and `Referer` headers.
