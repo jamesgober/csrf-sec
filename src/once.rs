@@ -110,8 +110,8 @@ impl fmt::Debug for NonceUse<'_> {
 
 /// Remembers which one-time tokens were used.
 ///
-/// Implement it over a store every node reaches for a cluster (WASP: the
-/// gates' session store); `MemoryStore` (feature `std`) serves one node and
+/// Implement it over a store every node reaches for a cluster (for example,
+/// the session store); `MemoryStore` (feature `std`) serves one node and
 /// tests.
 ///
 /// # Contract

@@ -37,7 +37,7 @@ csrf-sec answers one question for every state-changing request: **did this reque
 
 Goals, in order: security, then performance, then efficiency, then simplicity of use. Security is never traded for the others.
 
-- **Protocol-free.** Adapters (WASP's HTTP service, web-net, any framework) hand it the facts it needs as plain values. Nothing in this crate parses HTTP.
+- **Protocol-free.** Adapters (an HTTP service, web-net, any framework) hand it the facts it needs as plain values. Nothing in this crate parses HTTP.
 - **Stateless by default.** Any node holding the key ring verifies any token. Nothing to store, replicate, or lose, and no shared bottleneck between nodes.
 - **No allocation and no lock on the verify path.**
 - **Cross-platform.** Linux, macOS, and Windows; a `no_std` core.
@@ -47,7 +47,7 @@ Goals, in order: security, then performance, then efficiency, then simplicity of
 ## 2. Where it sits
 
 ```
- request ─▶ gateway-io ─▶ service gate block (authenticate ─▶ authorize)
+ request ─▶ a gateway ─▶ service gate block (authenticate ─▶ authorize)
                                   │
                                   ▼  state-changing route?
                          csrf-sec: policy check (origin facts) + token verify (session-bound)
@@ -58,7 +58,7 @@ Goals, in order: security, then performance, then efficiency, then simplicity of
  page render ─▶ csrf-sec: issue masked token ─▶ form field or meta tag
 ```
 
-- **Called by:** WASP services (login, logout, every unsafe route), web-net's form layer, and any HTTP framework built on the stack.
+- **Called by:** web services (login, logout, every unsafe route), web-net's form layer, and any HTTP framework built on the stack.
 - **Moved here from gate-net.** `gate-net/dev/PLAN.md` (anti-forgery primitive) and `WEB-STACK-DELIVERABLES.md` section 5 (CSRF token primitive from gate-net) planned it inside gate-net. It is its own crate now (D-001); the move is recorded in both places.
 
 ---
@@ -81,7 +81,7 @@ Goals, in order: security, then performance, then efficiency, then simplicity of
 | Not here | Where |
 |---|---|
 | HTTP parsing, header extraction | the adapter (`http-net`, web-net, the framework) |
-| sessions, session ids, the stale-session window | gate-net and WASP's gates |
+| sessions, session ids, the stale-session window | gate-net and the application's gates |
 | setting cookies, `SameSite`, the `__Host-` prefix | cookie-net (guidance documented here) |
 | cross-site scripting | output encoding and the content security policy (shield-sec, web-net); script on the page can read any token, so XSS defeats every CSRF defence |
 | clickjacking | frame options and CSP `frame-ancestors` |
@@ -173,7 +173,7 @@ A token can be issued for one action (`"POST /account/email"`). It then passes o
 
 ### 5.5 Stateful mode (optional seam)
 
-One-time tokens for high-value actions (D-011, D-035). A one-time token is a signed token with a 128-bit random nonce inside the MAC (raw 38 bytes, text 102 characters, version 2, its own subkey label). The MAC already proves the token was issued by this key ring, so a `NonceStore` records only **used** nonces: issuing never touches it; verify checks the MAC, lifetime, and scope **first**, and only then asks the store to record the nonce atomically (set-if-absent), passing only on first use. Forged requests never reach the store, so they cannot burn a user's token or put load on a shared store. A store that cannot answer fails closed. Default: none (stateless). `MemoryStore` (sharded, bounded, refusing tokens older than itself so a restart cannot replay) serves single nodes and tests; WASP implements the trait over the gates' session store.
+One-time tokens for high-value actions (D-011, D-035). A one-time token is a signed token with a 128-bit random nonce inside the MAC (raw 38 bytes, text 102 characters, version 2, its own subkey label). The MAC already proves the token was issued by this key ring, so a `NonceStore` records only **used** nonces: issuing never touches it; verify checks the MAC, lifetime, and scope **first**, and only then asks the store to record the nonce atomically (set-if-absent), passing only on first use. Forged requests never reach the store, so they cannot burn a user's token or put load on a shared store. A store that cannot answer fails closed. Default: none (stateless). `MemoryStore` (sharded, bounded, refusing tokens older than itself so a restart cannot replay) serves single nodes and tests; a cluster implements the trait over its session store.
 
 ---
 
@@ -185,7 +185,7 @@ One-time tokens for high-value actions (D-011, D-035). A one-time token is a sig
 - In a cluster, rotation is two steps: deploy the new key as accepted everywhere, then promote it to signing. No node ever receives a token signed with a key it does not know.
 - The application key is never used as a MAC key and is not kept: subkeys are derived at construction and wiped on drop (D-009). Keys whose bytes are all equal are refused (D-024).
 - Key ids are 1 byte; a retired id is never reused while tokens signed by it can still be presented.
-- The library holds no mutable state: rotation builds a new `Csrf` value (`csrf.rotated(new_key)`), and the application swaps it (WASP: a `Snapshot`). The verify path therefore takes no lock and touches no shared counter.
+- The library holds no mutable state: rotation builds a new `Csrf` value (`csrf.rotated(new_key)`), and the application swaps it. The verify path therefore takes no lock and touches no shared counter.
 
 ---
 
@@ -210,7 +210,7 @@ One-time tokens for high-value actions (D-011, D-035). A one-time token is a sig
 
 (This is the shipped order; the scope check moved inside the MAC, D-012.)
 
-The MAC is checked before expiry and scope so the reason is accurate: an expired real token (a glitch) and a forged token (an attack) are told apart, which WASP's severity scoring needs (`WASP.md` section 7.6). The work is fixed and bounded either way.
+The MAC is checked before expiry and scope so the reason is accurate: an expired real token (a glitch) and a forged token (an attack) are told apart, which severity scoring needs. The work is fixed and bounded either way.
 
 A session mismatch shows up as `BadMac`, because the session id is inside the MAC. To separate "stale token after re-login" (benign) from forgery, the verifier optionally accepts the **previous** session id (the gates keep it for a short window after login) and reports `StaleSession` when that one matches.
 
@@ -301,7 +301,7 @@ All public enums and structs that may grow are `#[non_exhaustive]`.
 | Id | Threat | Defence | Cost (measured unless marked) |
 |---|---|---|---|
 | T1 | classic CSRF: an attacker page auto-submits a form with the victim's cookies | policy check + session-bound token | 150 ns per unsafe request (`check_at`); a cross-site attempt is refused in 23 ns |
-| T2 | login CSRF: the victim is signed in to the attacker's account | token bound to the pre-session (WASP's lazy guest session) | same |
+| T2 | login CSRF: the victim is signed in to the attacker's account | token bound to the pre-session (a lazy guest session) | same |
 | T3 | forced logout | token on logout | same |
 | T4 | token recovered from compressed responses (BREACH) | per-response masking | 28 ns per issue on Linux (the pad), plus the XOR |
 | T5 | token reused in another session | MAC binds the session id | none extra |
@@ -384,7 +384,7 @@ No third-party runtime dependency of our own (crypt-io's audited primitives are 
 
 ### 12.3 Talks to
 
-WASP's gates (session ids, the stale-session window, severity events), cookie-net (`__Host-` session cookie, `SameSite`), web-net and form-net (hidden field and header names), sentinel-sec (reasons as events), bouncer-io (strikes).
+Session gates (session ids, the stale-session window, severity events), cookie-net (`__Host-` session cookie, `SameSite`), web-net and form-net (hidden field and header names), sentinel-sec (reasons as events), bouncer-io (strikes).
 
 ---
 
@@ -451,7 +451,7 @@ Outcomes: key fingerprints adopted (D-041); forgery-rate feedback adopted as doc
 
 | Id | Date | Decision | Reason |
 |---|---|---|---|
-| D-001 | 2026-10-21 | The anti-forgery primitive moves out of gate-net into this crate | it is protocol-free, needed by web-net and WASP alike, and has its own threat model; gate-net keeps sessions |
+| D-001 | 2026-10-21 | The anti-forgery primitive moves out of gate-net into this crate | it is protocol-free, needed by web-net and other web services alike, and has its own threat model; gate-net keeps sessions |
 | D-002 | 2026-10-21 | Stateless signed tokens by default; stateful one-time tokens behind a `TokenStore` seam | nothing to store or replicate on the common path, so verification scales linearly across nodes |
 | D-003 | 2026-10-21 | Keyed BLAKE3 with a 128-bit tag | a 128-bit tag puts online forgery out of reach; BLAKE3 keyed mode is the fastest audited MAC available through crypt-io |
 | D-004 | 2026-10-21 | Per-session tokens, masked per response | multi-tab browsing and the back button keep working, while BREACH cannot recover the token |
@@ -548,7 +548,7 @@ Outcomes: key fingerprints adopted (D-041); forgery-rate feedback adopted as doc
 | D-096 | 2026-10-28 | With `no_expiry`, a `now` past the last second any expiring token could reach (`2156 + lifetime + skew`) is refused as `expired` | keeps D-071's rule that out-of-range times (milliseconds for seconds) fail closed |
 | D-097 | 2026-10-28 | Docs: under `no_expiry` the session value is regenerated at login, never reissued after logout, never a user or account id; rotation with `no_expiry` ends forms older than the grace; the minimal `NonceStore` example is marked test-only | each would have led an integrator into an unsafe or surprising setup |
 | D-098 | 2026-11-02 | Minimum `crypt-io` raised to 1.2.2 | crypt-io below 1.2.2 locks `ctutils` 0.4.2 (RUSTSEC-2026-0385) through its weak `hmac?/zeroize` feature. `cargo tree` shows it is never built here, so no release was affected, but a security crate should not set off a consumer's `cargo audit`. CI generates a fresh lockfile and never saw it; only a stale lockfile does |
-| D-099 | 2026-11-08 | A shared one-time store needs only set-if-absent with an expiry; `tests/cluster.rs` holds every implementation to that, with several independently built nodes racing. No new API to check the cluster rules: nodes compare `key_fingerprint` and `once_lifetime()`, as the docs say, until a real integration shows a single value is needed | the store contract is what WASP's gates must provide, so it is proven before they exist; a combined configuration fingerprint would be a public name to live with until 2.0, chosen before anyone has deployed a cluster |
+| D-099 | 2026-11-08 | A shared one-time store needs only set-if-absent with an expiry; `tests/cluster.rs` holds every implementation to that, with several independently built nodes racing. No new API to check the cluster rules: nodes compare `key_fingerprint` and `once_lifetime()`, as the docs say, until a real integration shows a single value is needed | the store contract is what a cluster's gates must provide, so it is proven before they exist; a combined configuration fingerprint would be a public name to live with until 2.0, chosen before anyone has deployed a cluster |
 | D-100 | 2026-11-08 | Performance since v0.9.0 checked by reading the hot-path diff, not by timing: a select for the expiry bound, one `store.is_none()` test in `check_at`, one comparison in `MemoryStore::consume` | an A/B benchmark on the shared machine (other sessions' soak and fuzz jobs on about eight cores) moved v0.9.0 against itself by -55% to +119%, so it could show nothing; `perf` and `valgrind` are not installed. `PERFORMANCE.md` stays as measured until the full gate re-measures on a quiet machine |
 | D-101 | 2026-11-11 | First integration read: web-net 0.9's CSRF step (`policy`, then `verify` once the token is read from the body) and gatekeeper-io 0.4's sign-in (`Binding::new(pre_session).scope("login")`, `check_at`). csrf-sec's API needed no change; its guide gains the scope rule for layered checks and the supported `policy`-then-`verify` split, pinned by a property test. Defects on the other side go to their sessions: web-net checks a guest with the bare pre-session value, so gatekeeper-io's scoped login token would fail there as `bad_mac` (a forgery, severity 40) on every sign-in; web-net's reason-to-code map sends `already_used`, `too_many_uses`, and `store_unavailable` to a generic code; gatekeeper-io's `CsrfRejected` signal drops the reason and severity; nothing runs the two together | a scope is MAC'd but never written into the token, so csrf-sec cannot tell a verifier that left the scope out from a forgery; the remedy is a shared binding, which only the layers can agree on. Reproduced with csrf-sec alone: the scoped login token passes gatekeeper-io's check and fails web-net's as `bad_mac` |
 | D-102 | 2026-11-11 | `RequestFacts::from_headers(method, own_origin, lookup)` is the Tier 1 way to describe a request; the setters stay for adapters with no header lookup | checking a request took a four-call chain, and both the README and the API guide's shortest examples left out `Referer`, which drops the fallback for browsers without Fetch Metadata. One call that asks for all three headers cannot forget one. Held equal to the setters by a property test |
