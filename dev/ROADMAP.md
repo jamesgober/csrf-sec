@@ -95,7 +95,7 @@ Exit: an independent adversarial review with every finding fixed test-first; the
 
 ## v0.9.4 - First integration (DONE, 2026-11-11)
 - [x] web-net 0.9 (its CSRF step) and gatekeeper-io 0.4 (sign-in) read against csrf-sec 0.9.3 from crates.io (D-101). Two gaps in csrf-sec's guide, both documentation: a scoped token checked without its scope fails as `bad_mac`, and two layers on one request must share a binding; `policy` then `verify` is a supported split, now held equal to `check` in `Strict` by a property test.
-- [x] Integration defects on the other side reported to the WASP coordinator: the login token's scope against web-net's guest binding, web-net's reason codes missing three reasons, gatekeeper-io's refusal signal dropping the reason and severity, and no test that runs the two together.
+- [x] Integration defects on the other side reported upstream: the login token's scope against web-net's guest binding, web-net's reason codes missing three reasons, gatekeeper-io's refusal signal dropping the reason and severity, and no test that runs the two together.
 
 ## v0.10.0 - Simplicity (DONE, 2026-11-11)
 Every public item checked for one-line common uses, plain names, and one way to do each thing (D-102 to D-106). Breaking, with a migration note.
@@ -117,7 +117,7 @@ An independent review of 0.10.0: no forgery, no pass forged; two low findings an
 
 **Proven in use**
 - [ ] **A real integration.** gate-net (sessions) and the web-net adapter use csrf-sec from crates.io, in front of real routes: login, logout, a form, a `fetch` API. Every piece of friction they hit is fixed in a 0.9.x or 0.10 release first. *Progress (0.9.4):* both depend on csrf-sec 0.9.3 from crates.io; the first reading found two documentation gaps here (fixed) and defects on their side (reported, D-101). Still needed: the two run together in front of real routes, with an end-to-end test.
-- [ ] **A shared one-time store.** A `NonceStore` over the store WASP's gates share, set-if-absent with expiry, tested with several nodes consuming the same tokens at once, and the cluster rules (same keys, same `once_lifetime`) checked at deployment. *Progress (0.9.3):* `tests/cluster.rs` proves the set-if-absent contract is enough, with several nodes racing; what remains is the adapter over the real store and the deployment check, both waiting on WASP's gates.
+- [ ] **A shared one-time store.** A `NonceStore` over a store the gates of several nodes share, set-if-absent with expiry, tested with several nodes consuming the same tokens at once, and the cluster rules (same keys, same `once_lifetime`) checked at deployment. *Progress (0.9.3):* `tests/cluster.rs` proves the set-if-absent contract is enough, with several nodes racing; what remains is the adapter over the real store and the deployment check, both waiting on a real deployment.
 - [ ] **The API names, signed off by James.** Every public name is one to live with until 2.0: `Csrf`, `Binding`, `once`, `previous_session`, `check_with`, `no_expiry`, `RequestFacts`, `Reason` names.
 
 **Locked down**
